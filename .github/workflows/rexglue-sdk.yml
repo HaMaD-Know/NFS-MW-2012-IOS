@@ -105,9 +105,15 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/logs/build.log"
           echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
 
+      # On the headless macOS runner, tests that open an SDL window trap inside AppKit
+      # (NSWindow makeKeyAndOrderFront; lldb backtrace in run 44053778412). Use SDL's
+      # offscreen video and dummy audio drivers so tests do not need a window server.
       - name: Run unit tests
         id: tests
         working-directory: rexglue-sdk
+        env:
+          SDL_VIDEO_DRIVER: offscreen
+          SDL_AUDIO_DRIVER: dummy
         run: |
           set -o pipefail
           ctest --test-dir out/build/${{ matrix.platform }} -C "$BUILD_CONFIG" --output-on-failure --no-tests=error \
@@ -140,16 +146,20 @@ jobs:
             lldb --batch -o run -k "bt 40" -k quit -- "${cmd[@]}" 2>&1 | tail -n 80 || true
           done 2>&1 | tee "$RUNNER_TEMP/logs/backtrace.log"
 
-      # The CLI is not installed; the build writes it to out/<platform>/ with a "d" suffix
-      # in Debug (rex_config_postfix in src/rexglue/CMakeLists.txt).
+      # The CLI is not installed; the build writes it to out/<platform>/<config>/ with a "d"
+      # suffix in Debug (rex_config_postfix in src/rexglue/CMakeLists.txt).
       - name: Check the rexglue command-line tool
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         working-directory: rexglue-sdk
         run: |
           set -o pipefail
-          dir="out/${{ matrix.platform }}"
-          exe=$(ls "$dir" | grep -E '^rexglued?(\.exe)?$' | head -1)
-          { ls -l "$dir" | grep -i rexglue; test -n "$exe"; "$dir/$exe" --help | head -40; } 2>&1 | tee "$RUNNER_TEMP/logs/cli.log"
+          {
+            exe=$(find out/${{ matrix.platform }} -maxdepth 2 -type f \( -name 'rexglue' -o -name 'rexglued' -o -name 'rexglue.exe' -o -name 'rexglued.exe' \) | head -1)
+            echo "CLI: ${exe:-not found}"
+            ls -l out/${{ matrix.platform }}
+            test -n "$exe"
+            "$exe" --help | head -40
+          } 2>&1 | tee "$RUNNER_TEMP/logs/cli.log"
 
       # Job logs need a GitHub sign-in to read. Annotations do not, so publish the end of
       # every log as one annotation per file.

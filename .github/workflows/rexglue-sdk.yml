@@ -114,10 +114,27 @@ jobs:
         env:
           SDL_VIDEO_DRIVER: offscreen
           SDL_AUDIO_DRIVER: dummy
+        # Timing-based tests (fixed sleeps, deadlines) fail now and then on the shared 3-core
+        # macOS runner, a different one each run (runs 44057051894, 44060768652). Give each
+        # failing test up to 3 attempts; tests that needed a retry are reported below.
         run: |
           set -o pipefail
           ctest --test-dir out/build/${{ matrix.platform }} -C "$BUILD_CONFIG" --output-on-failure --no-tests=error \
-            2>&1 | tee "$RUNNER_TEMP/logs/test.log"
+            --repeat until-pass:3 2>&1 | tee "$RUNNER_TEMP/logs/test.log"
+
+      - name: Report tests that needed a retry
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        run: |
+          retried=$(grep -E '^ *[0-9]+/[0-9]+ Test +#[0-9]+: .*(\*\*\*Failed|\*\*\*Exception|\*\*\*Timeout)' "$RUNNER_TEMP/logs/test.log" \
+            | sed -E -e 's/^ *[0-9]+\/[0-9]+ Test +#[0-9]+: //' -e 's/ \.{3,}.*$//' | sort | uniq -c || true)
+          if [ -n "$retried" ]; then
+            echo "$retried" | tee "$RUNNER_TEMP/logs/retried.log"
+            body=$(echo "$retried" | awk 'BEGIN{ORS="%0A"} {print}')
+            echo "::warning title=${{ matrix.platform }} tests that failed at least once::${body}"
+            { echo "### Tests that failed at least once (attempts failed, name)"; echo '```'; echo "$retried"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No test needed a retry."
+          fi
 
       # Upstream builds macOS with tests off, so failures there have no upstream record.
       # Run 44057051894 left two timing-based tests failing on macOS (a Ke mutant handoff

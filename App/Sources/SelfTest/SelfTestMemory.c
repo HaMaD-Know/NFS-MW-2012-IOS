@@ -128,11 +128,14 @@ int selftest_guest_memory(selftest_log_fn log) {
     uint8_t *b = (uint8_t *)base;
     // Physical memory appears at 0xA0000000, 0xC0000000, 0xE0000000 (+0x1000 in code on 16 KB pages)
     // and raw at 0x100000000. Write through one view, read through the others.
-    const size_t e_adjust = page > 0x1000 ? 0x1000 : 0;
+    // Guest 0xE0000000 + X is physical X + 0x1000. With 16 KB host pages the view starts at physical 0
+    // and code adds 0x1000 to the host address; with 4 KB pages the view itself is offset by 0x1000.
+    // Either way, physical P is at host 0xE0000000 + P - (page > 0x1000 ? 0 : 0x1000).
+    const size_t e_adjust = page > 0x1000 ? 0 : 0x1000;
     volatile uint32_t *via_a = (volatile uint32_t *)(b + 0xA0000000ull + 0x10000);
     *via_a = 0xC0FFEE01u;
     const uint32_t via_c = *(volatile uint32_t *)(b + 0xC0000000ull + 0x10000);
-    const uint32_t via_e = *(volatile uint32_t *)(b + 0xE0000000ull + 0x10000 + e_adjust);
+    const uint32_t via_e = *(volatile uint32_t *)(b + 0xE0000000ull + 0x10000 - e_adjust);
     const uint32_t via_raw = *(volatile uint32_t *)(b + 0x100000000ull + 0x10000);
     // 0x80000000 and 0x90000000 map the same backing (XEX image mirrors).
     *(volatile uint32_t *)(b + 0x80000100ull) = 0x5EEDF00Du;

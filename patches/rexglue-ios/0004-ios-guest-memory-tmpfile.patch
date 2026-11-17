@@ -1,5 +1,5 @@
 diff --git a/src/base/memory_posix.cpp b/src/base/memory_posix.cpp
-index 3d214a1..3cd24f1 100644
+index 3d214a1..040baf2 100644
 --- a/src/base/memory_posix.cpp
 +++ b/src/base/memory_posix.cpp
 @@ -34,6 +34,9 @@
@@ -37,9 +37,13 @@ index 3d214a1..3cd24f1 100644
  #else
    int oflag;
    switch (access) {
-@@ -450,7 +471,7 @@ void RemoveStaleFileMappings([[maybe_unused]] std::string_view prefix) {
+@@ -448,9 +469,10 @@ void RemoveStaleFileMappings([[maybe_unused]] std::string_view prefix) {
+ #endif
+ }
  
- void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
+-void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
++void CloseFileMappingHandle(FileMappingHandle handle,
++                            [[maybe_unused]] const std::filesystem::path& path) {
    close(handle);
 -#if !REX_PLATFORM_ANDROID
 +#if !REX_PLATFORM_ANDROID && !REX_PLATFORM_IOS  // the iOS backing file is already unlinked

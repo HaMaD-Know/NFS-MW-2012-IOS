@@ -1,0 +1,93 @@
+# Builds the ReXGlue SDK (Xbox 360 static recompilation SDK, BSD-3-Clause) from source at a
+# pinned commit, with its unit tests, on Windows and on Apple-silicon macOS.
+# Purpose: prove the toolchain builds and record how long it takes. No game files are involved.
+name: ReXGlue SDK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/rexglue-sdk.yml"
+
+permissions:
+  contents: read
+
+env:
+  # rexglue/rexglue-sdk main, 2026-11-14. Change deliberately, and record why.
+  REXGLUE_REF: ebac1cf0d04bab0042a5dd6148b34ab3953e9c0d
+
+jobs:
+  sdk:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: win-amd64
+            os: windows-latest
+            cc: clang
+            cxx: clang++
+          - platform: mac-arm64
+            os: macos-26
+            cc: /usr/bin/clang
+            cxx: /usr/bin/clang++
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out ReXGlue SDK at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: rexglue/rexglue-sdk
+          ref: ${{ env.REXGLUE_REF }}
+          submodules: recursive
+          path: rexglue-sdk
+
+      # ReXGlue's own toolchain action: LLVM 20 + CMake + Ninja + Vulkan SDK on Windows,
+      # CMake + Ninja + Vulkan SDK on macOS.
+      - name: Set up toolchain
+        uses: ./rexglue-sdk/.github/actions/setup-toolchain
+        with:
+          platform: ${{ matrix.platform }}
+
+      - name: Configure
+        working-directory: rexglue-sdk
+        run: |
+          start=$(date +%s); echo "CONFIGURE_START=$start" >> "$GITHUB_ENV"
+          cmake --preset ${{ matrix.platform }} \
+            -DCMAKE_C_COMPILER="${{ matrix.cc }}" \
+            -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}" \
+            -DREXGLUE_BUILD_TESTS=ON
+
+      - name: Build and install
+        working-directory: rexglue-sdk
+        run: |
+          start=$(date +%s)
+          cmake --build out/build/${{ matrix.platform }} --target install --parallel
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      - name: Run unit tests
+        working-directory: rexglue-sdk
+        run: ctest --test-dir out/build/${{ matrix.platform }} --output-on-failure --no-tests=error
+
+      - name: Check the rexglue command-line tool
+        working-directory: rexglue-sdk
+        run: |
+          bin="out/install/${{ matrix.platform }}/bin"
+          ls -l "$bin"
+          "$bin/rexglue" --help | head -40
+
+      - name: Summary
+        if: always()
+        working-directory: rexglue-sdk
+        run: |
+          {
+            echo "### ReXGlue SDK — ${{ matrix.platform }}"
+            echo "- Commit: \`${REXGLUE_REF}\`"
+            echo "- Build and install time: ${BUILD_SECONDS:-n/a} s"
+            echo "- Build tree size: $(du -sh out/build 2>/dev/null | cut -f1)"
+            echo "- Install size: $(du -sh out/install 2>/dev/null | cut -f1)"
+          } >> "$GITHUB_STEP_SUMMARY"

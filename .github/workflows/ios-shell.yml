@@ -1,0 +1,85 @@
+# Builds the iPadOS platform test shell as an unsigned ARM64 IPA.
+# Contains no game code. Runs on a GitHub-hosted macOS runner, so no Mac is needed locally.
+name: iPad test shell
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "App/**"
+      - ".github/workflows/ios-shell.yml"
+  pull_request:
+    paths:
+      - "App/**"
+      - ".github/workflows/ios-shell.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: App
+        run: xcodegen generate
+
+      - name: Build for iPadOS (arm64, unsigned)
+        working-directory: App
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project NFSMWShell.xcodeproj \
+            -target NFSMWShell \
+            -configuration Release \
+            -sdk iphoneos \
+            SYMROOT="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log
+
+      - name: Verify the binary
+        run: |
+          APP="App/build/Release-iphoneos/NFSMWShell.app"
+          test -x "$APP/NFSMWShell"
+          lipo -info "$APP/NFSMWShell"
+          lipo -info "$APP/NFSMWShell" | grep -q "arm64"
+          xcrun vtool -show-build "$APP/NFSMWShell"
+          xcrun vtool -show-build "$APP/NFSMWShell" | grep -q "IOS"
+          plutil -p "$APP/Info.plist"
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p dist/Payload
+          cp -R "App/build/Release-iphoneos/NFSMWShell.app" dist/Payload/
+          (cd dist && zip -qry NFSMWShell-unsigned.ipa Payload)
+          (cd dist && shasum -a 256 NFSMWShell-unsigned.ipa | tee NFSMWShell-unsigned.ipa.sha256)
+          ls -l dist
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: NFSMWShell-unsigned-ipa
+          path: |
+            dist/NFSMWShell-unsigned.ipa
+            dist/NFSMWShell-unsigned.ipa.sha256
+          retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-shell-build-log
+          path: App/build.log
+          retention-days: 14

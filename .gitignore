@@ -1,0 +1,72 @@
+# ---------------------------------------------------------------------------
+# NEVER COMMIT GAME CONTENT OR CODE DERIVED FROM IT
+# Game data is supplied by each user from their own copy. Code generated from a
+# game executable is derived from the publisher's code and stays on the machine
+# that produced it.
+# ---------------------------------------------------------------------------
+GameData/*
+!GameData/README.md
+
+# Xbox 360 and PC game files, disc images, title updates
+*.xex
+*.xexp
+*.iso
+*.god
+*.xcp
+*.stfs
+*.BNDL
+*.bndl
+*.VP6
+*.vp6
+*.SPS
+*.sps
+*.SWC0
+*.swc0
+*.exe
+*.dll
+
+# Recompiler output and private inputs (any depth)
+generated/
+**/generated/
+private/
+**/private/
+assets/
+game_root/
+*.ppc.cpp
+ppc_*.cpp
+ppc_*.h
+
+# Analysis of a local game installation (contains hashes and strings of game binaries)
+GameIntegration/ExecutableAnalysis/*.json
+*_strings.txt
+
+# Local research notes: they contain local paths and details of a private game copy.
+# Kept on this PC only. Public documentation lives in the files allowed below.
+Documentation/*
+!Documentation/BUILD_GUIDE.md
+!Documentation/PUBLIC_STATUS.md
+
+# Signing material and secrets
+*.p12
+*.mobileprovision
+*.cer
+*.key
+*.pem
+.env
+
+# Build output
+build/
+out/
+dist/
+DerivedData/
+App/*.xcodeproj/
+App/Generated/
+*.ipa
+*.xcarchive
+
+# Tooling
+__pycache__/
+*.pyc
+.DS_Store
+.vs/
+.vscode/

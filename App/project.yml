@@ -1,0 +1,47 @@
+# XcodeGen project description for the iPadOS test shell.
+# The .xcodeproj is generated in CI (`xcodegen generate`) and is not committed.
+name: NFSMWShell
+
+options:
+  bundleIdPrefix: dev.nfsmw2012ipad
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "2"          # iPad only
+    ARCHS: arm64
+    ENABLE_BITCODE: NO
+    CODE_SIGNING_ALLOWED: NO             # unsigned IPA; the user's sideloading tool signs it
+
+targets:
+  NFSMWShell:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: NFS MW Shell
+        CFBundleShortVersionString: "0.0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIFileSharingEnabled: true               # log file visible in the Files app
+        LSSupportsOpeningDocumentsInPlace: true
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.nfsmw2012ipad.shell
+        PRODUCT_NAME: NFSMWShell

@@ -1,0 +1,177 @@
+diff --git a/include/rex/platform/thread.h b/include/rex/platform/thread.h
+index 6cc87a4..bcb3d3d 100644
+--- a/include/rex/platform/thread.h
++++ b/include/rex/platform/thread.h
+@@ -291,10 +291,12 @@ std::jthread Spawn(std::string_view name, F&& fn) {
+ }  // namespace rex::platform
+ 
+ #if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
++#if !REX_PLATFORM_IOS  // iOS has no working ucontext (getcontext returns ENOTSUP)
+ #if REX_PLATFORM_MAC && !defined(_XOPEN_SOURCE)
+ #define _XOPEN_SOURCE 700
+ #endif
+ #include <ucontext.h>
++#endif
+ #include <cstdint>
+ #include <vector>
+ #endif
+@@ -337,6 +339,20 @@ struct REX_API Fiber {
+ #if REX_PLATFORM_WIN32
+   void* handle_ = nullptr;
+   bool is_thread_fiber_ = false;
++#elif REX_PLATFORM_IOS
++  /** arm64 callee-saved state: x19..x28, x29 (fp), x30 (lr), sp, d8..d15 (see fiber_posix.cpp). */
++  struct Context {
++    u64 x[12];
++    u64 sp;
++    u64 d[8];
++  };
++  Context context_{};
++  std::vector<u8> stack_;
++  void (*entry_)(void*) = nullptr;
++  void* arg_ = nullptr;
++  bool is_thread_fiber_ = false;
++
++  static void Trampoline(void* fiber);
+ #elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+   ucontext_t context_{};
+   std::vector<u8> stack_;
+diff --git a/src/base/fiber_posix.cpp b/src/base/fiber_posix.cpp
+index 3d25ae2..1370156 100644
+--- a/src/base/fiber_posix.cpp
++++ b/src/base/fiber_posix.cpp
+@@ -1,10 +1,126 @@
+-#if defined(__APPLE__) && !defined(_XOPEN_SOURCE)
++#if defined(__APPLE__)
++#include <TargetConditionals.h>
++#endif
++#if defined(__APPLE__) && !TARGET_OS_IPHONE && !defined(_XOPEN_SOURCE)
+ // Darwin exposes ucontext only with a feature level set before <ucontext.h>.
+ #define _XOPEN_SOURCE 700
+ #endif
+ 
+ #include <rex/platform.h>
+-#if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
++#if REX_PLATFORM_IOS
++// iOS: getcontext/makecontext/swapcontext are not supported (ENOTSUP on an iPad Pro M2,
++// iPadOS 26.6.1), so fibers use a small arm64 context switch. It saves and restores only what
++// the AArch64 calling convention requires a callee to preserve: x19-x28, x29, x30, sp and
++// d8-d15. x18 is reserved by the platform and never touched.
++
++#include <rex/platform/thread.h>
++
++#include <cassert>
++#include <cstddef>
++#include <cstdint>
++#include <cstdlib>
++#include <memory>
++
++namespace rex::platform {
++
++namespace {
++thread_local Fiber* g_current_fiber = nullptr;
++
++// x0 = from context, x1 = to context. Returns into to->x30.
++__attribute__((naked)) void SwitchContext(void* from, const void* to) {
++  asm volatile(
++      "stp x19, x20, [x0, #0]\n"
++      "stp x21, x22, [x0, #16]\n"
++      "stp x23, x24, [x0, #32]\n"
++      "stp x25, x26, [x0, #48]\n"
++      "stp x27, x28, [x0, #64]\n"
++      "stp x29, x30, [x0, #80]\n"
++      "mov x9, sp\n"
++      "str x9, [x0, #96]\n"
++      "stp d8, d9, [x0, #104]\n"
++      "stp d10, d11, [x0, #120]\n"
++      "stp d12, d13, [x0, #136]\n"
++      "stp d14, d15, [x0, #152]\n"
++      "ldp x19, x20, [x1, #0]\n"
++      "ldp x21, x22, [x1, #16]\n"
++      "ldp x23, x24, [x1, #32]\n"
++      "ldp x25, x26, [x1, #48]\n"
++      "ldp x27, x28, [x1, #64]\n"
++      "ldp x29, x30, [x1, #80]\n"
++      "ldr x9, [x1, #96]\n"
++      "mov sp, x9\n"
++      "ldp d8, d9, [x1, #104]\n"
++      "ldp d10, d11, [x1, #120]\n"
++      "ldp d12, d13, [x1, #136]\n"
++      "ldp d14, d15, [x1, #152]\n"
++      "ret\n");
++}
++
++// First instructions of a new fiber: x19 = function, x20 = its argument.
++__attribute__((naked)) void StartContext() {
++  asm volatile(
++      "mov x0, x20\n"
++      "blr x19\n"
++      "brk #0xf1\n");
++}
++}  // namespace
++
++Fiber* Fiber::GetCurrent() {
++  return g_current_fiber;
++}
++
++Fiber* Fiber::ConvertCurrentThread() {
++  auto f = std::make_unique<Fiber>();
++  // The thread's registers are saved into context_ the first time it switches away.
++  f->is_thread_fiber_ = true;
++  g_current_fiber = f.get();
++  return f.release();
++}
++
++Fiber* Fiber::Create(size_t stack_size, void (*entry)(void*), void* arg) {
++  static_assert(offsetof(Context, sp) == 96 && offsetof(Context, d) == 104 &&
++                    sizeof(Context) == 168,
++                "SwitchContext depends on this layout");
++  auto f = std::make_unique<Fiber>();
++  f->entry_ = entry;
++  f->arg_ = arg;
++  f->stack_.resize(stack_size);
++  const uintptr_t top =
++      (reinterpret_cast<uintptr_t>(f->stack_.data()) + f->stack_.size()) & ~uintptr_t{15};
++  f->context_ = {};
++  f->context_.x[0] = reinterpret_cast<uintptr_t>(&Fiber::Trampoline);  // x19
++  f->context_.x[1] = reinterpret_cast<uintptr_t>(f.get());             // x20
++  f->context_.x[11] = reinterpret_cast<uintptr_t>(&StartContext);      // x30
++  f->context_.sp = top;
++  return f.release();
++}
++
++/*static*/ void Fiber::Trampoline(void* fiber) {
++  auto* f = static_cast<Fiber*>(fiber);
++  f->entry_(f->arg_);
++  // A fiber entry has no caller frame to return to (the ucontext version, with uc_link null,
++  // ends the thread). Returning here is a programming error.
++  std::abort();
++}
++
++void Fiber::SwitchTo(Fiber* target) {
++  Fiber* from = g_current_fiber;
++  g_current_fiber = target;
++  SwitchContext(&from->context_, &target->context_);
++}
++
++void Fiber::Destroy() {
++  if (is_thread_fiber_) {
++    g_current_fiber = nullptr;
++  } else {
++    assert(this != g_current_fiber && "Destroy called on the currently running fiber");
++  }
++  delete this;
++}
++
++}  // namespace rex::platform
++
++#elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+ 
+ #include <rex/platform/thread.h>
+ 
+@@ -73,4 +189,4 @@ void Fiber::Destroy() {
+ 
+ }  // namespace rex::platform
+ 
+-#endif  // REX_PLATFORM_LINUX || REX_PLATFORM_MAC
++#endif  // REX_PLATFORM_IOS / REX_PLATFORM_LINUX || REX_PLATFORM_MAC

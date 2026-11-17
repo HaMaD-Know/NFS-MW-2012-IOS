@@ -29,6 +29,20 @@ int selftest_fault_handling(selftest_log_fn log);
 /** ucontext fibers: two round trips between the calling thread and a fiber. */
 int selftest_fibers(selftest_log_fn log);
 
+// --- Replacements (added after the first device run: shm_open EPERM, getcontext ENOTSUP) ---
+
+/** Guest layout backed by a deleted temporary file in TMPDIR (drop-in for shm_open). */
+int selftest_backing_file(selftest_log_fn log);
+
+/** Guest layout backed by a Mach named memory entry, views mapped with vm_map. */
+int selftest_backing_mach_entry(selftest_log_fn log);
+
+/** Guest layout from plain memory, mirrors created with vm_remap. */
+int selftest_backing_vm_remap(selftest_log_fn log);
+
+/** arm64 fiber switch (RexFiberArm64.c): round trips, fiber-to-fiber, deep stack, speed. */
+int selftest_fibers_arm64(selftest_log_fn log);
+
 #ifdef __cplusplus
 }
 #endif

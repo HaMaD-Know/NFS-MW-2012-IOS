@@ -45,7 +45,7 @@ struct ContentView: View {
                 if !selfTest.summary.isEmpty {
                     Text(selfTest.summary)
                 }
-                ForEach(selfTest.lines.suffix(16)) { line in
+                ForEach(selfTest.lines.suffix(28)) { line in
                     Text(line.text)
                         .font(.system(.caption, design: .monospaced))
                         .lineLimit(2)

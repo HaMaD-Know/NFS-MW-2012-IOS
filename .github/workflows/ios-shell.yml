@@ -29,6 +29,13 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      # Logic check of the runtime self-tests on this Apple-silicon Mac. It catches mistakes in
+      # the test code; it cannot show what iPadOS allows (only the device can).
+      - name: Run runtime self-tests on the macOS runner (logic check)
+        run: |
+          clang -std=gnu17 -O1 -Wall -Wextra -Wno-unused-parameter -o selftest_host             App/Tests/selftest_host.c App/Sources/SelfTest/*.c
+          ./selftest_host
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

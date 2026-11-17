@@ -3,6 +3,9 @@
 # The build keeps going after errors so that every failure is collected and reported.
 # No game files are involved. Success here would only mean "compiles for iOS", never "runs on an iPad".
 name: ReXGlue iOS trial
+# Note: GitHub may cancel a job when no macOS arm64 runner is free for ~15 minutes
+# ("The job was not acquired by Runner of type hosted"; runs 44132292928/44132292950).
+# That is a capacity problem, not a build result; re-run the workflow.
 
 on:
   workflow_dispatch:

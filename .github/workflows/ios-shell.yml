@@ -1,6 +1,9 @@
 # Builds the iPadOS platform test shell as an unsigned ARM64 IPA.
 # Contains no game code. Runs on a GitHub-hosted macOS runner, so no Mac is needed locally.
 name: iPad test shell
+# Note: GitHub may cancel a job when no macOS arm64 runner is free for ~15 minutes
+# ("The job was not acquired by Runner of type hosted"; runs 44132292928/44132292950).
+# That is a capacity problem, not a build result; re-run the workflow.
 
 on:
   push:

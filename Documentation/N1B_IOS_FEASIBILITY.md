@@ -3,6 +3,38 @@
 Written 2026-11-17. This is a desk assessment. **Nothing in it has been built or run for
 iOS yet.**
 
+## Progress log
+
+| Date | Step | Result | Evidence |
+|---|---|---|---|
+| 2026-11-17 | B1 trial, unpatched | Configure fails with one error: `install TARGETS given no BUNDLE DESTINATION for MACOSX_BUNDLE executable target "rexglue"` (on iOS the recompiler CLI becomes an app bundle). Vulkan SDK, Iconv and all submodules are found for iOS | Run 44113373357 |
+| 2026-11-17 | B3 patches 0001–0002 | Configure passes; 905/925 build steps; 2 files fail: `mach_vm_region` (`<mach/mach_vm.h>` is unsupported in the iOS SDK) in `memory_posix.cpp` and `process_resources_posix.cpp` | Run 44114620284 |
+| 2026-11-17 | B3 patch 0003 | **925/925 steps, 0 compiler errors, 0 failed steps.** Every runtime module links as an iOS arm64 library. Linker warnings only: duplicate `libxxhashd.a` on the link line; `-undefined error` deprecated | Run 44116653662 |
+| 2026-11-17 | B2 self-test | Added to the iPad shell; builds | Run 44112115204; device results pending |
+
+Patch series (`patches/rexglue-ios/`, applied to `ebac1cf`):
+- `0001-ios-platform-identity`: `REX_PLATFORM_IOS`, the `ios-arm64` platform, iOS 17 deployment
+  target, no `MAP_JIT` or executable pages on iOS, no `fork`/`execv` relaunch, and the instance
+  lock in `TMPDIR`.
+- `0002-ios-skip-host-tools`: the recompiler CLI is excluded from the default iOS build and not
+  installed.
+- `0003-ios-vm-region`: `vm_region_64` instead of `mach_vm_region` on iOS.
+
+Of the predicted tasks in §3:
+- **Done:** T1, T2, T5, T6 and T12 (CLI excluded).
+- **Turned out to need no change to compile:** T11. SDL3, FFmpeg, glslang and the other
+  submodules built for iOS as they are.
+- **Compile-time task not predicted, now done:** `mach_vm_region` (patch 0003).
+- **Still open, all run-time problems that compiling cannot reveal:**
+  - T3: guest memory reservation on the device.
+  - T4: fibers.
+  - T7: storage paths.
+  - T8: `dlopen` of the module libraries from inside the app bundle.
+  - T9: the Vulkan loader. The code still `dlopen`s `libvulkan.1.dylib`, which does not exist on
+    iOS; MoltenVK must be embedded.
+  - T10: thread priority.
+  - T13: app lifecycle.
+
 ## 0. Starting point (verified)
 
 | Item | State | Evidence |

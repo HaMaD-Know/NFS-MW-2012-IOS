@@ -1,0 +1,166 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6fff098..2fb648e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -3,10 +3,18 @@ cmake_minimum_required(VERSION 3.25)
+ 
+ if (APPLE)
+   set(REXGLUE_LANGUAGES C CXX OBJC OBJCXX)
+-  set(CMAKE_OSX_DEPLOYMENT_TARGET
+-      "13.3"
+-      CACHE STRING "Minimum macOS version to build for"
+-  )
++  if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
++    # iPadOS/iOS: C++23 library features used by the SDK need iOS 17.
++    set(CMAKE_OSX_DEPLOYMENT_TARGET
++        "17.0"
++        CACHE STRING "Minimum iOS version to build for"
++    )
++  else ()
++    set(CMAKE_OSX_DEPLOYMENT_TARGET
++        "13.3"
++        CACHE STRING "Minimum macOS version to build for"
++    )
++  endif ()
+ else ()
+   set(REXGLUE_LANGUAGES C CXX)
+ endif ()
+@@ -185,6 +193,12 @@ elseif (UNIX AND NOT APPLE)
+   else ()
+     set(REX_PLATFORM "linux-${REX_TARGET_PROCESSOR}")
+   endif ()
++elseif (APPLE AND CMAKE_SYSTEM_NAME STREQUAL "iOS")
++  if (REX_TARGET_PROCESSOR MATCHES "aarch64|ARM64|arm64")
++    set(REX_PLATFORM "ios-arm64")
++  else ()
++    message(FATAL_ERROR "Unsupported iOS architecture: ${REX_TARGET_PROCESSOR} (only arm64 devices)")
++  endif ()
+ elseif (APPLE)
+   if (REX_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
+     set(REX_PLATFORM "mac-amd64")
+@@ -194,7 +208,7 @@ elseif (APPLE)
+     set(REX_PLATFORM "mac-${REX_TARGET_PROCESSOR}")
+   endif ()
+ else ()
+-  message(FATAL_ERROR "Unsupported platform. ReXGlue supports Windows, Linux, and macOS only.")
++  message(FATAL_ERROR "Unsupported platform. ReXGlue supports Windows, Linux, macOS and iOS (arm64).")
+ endif ()
+ 
+ # Build config as compile definition (multi-config generators don't know config at configure time)
+diff --git a/include/rex/platform.h b/include/rex/platform.h
+index e86a6af..a7d5cee 100644
+--- a/include/rex/platform.h
++++ b/include/rex/platform.h
+@@ -18,7 +18,12 @@
+ #endif
+ 
+ #if defined(TARGET_OS_MAC) && TARGET_OS_MAC
++// Every Apple OS sets TARGET_OS_MAC, so REX_PLATFORM_MAC means "Darwin" (macOS or iOS/iPadOS).
++// REX_PLATFORM_IOS narrows it to iOS/iPadOS for code that relies on macOS-only behaviour.
+ #define REX_PLATFORM_MAC 1
++#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
++#define REX_PLATFORM_IOS 1
++#endif
+ #elif defined(WIN32) || defined(_WIN32)
+ #define REX_PLATFORM_WIN32 1
+ #elif defined(__ANDROID__)
+@@ -38,6 +43,9 @@
+ #ifndef REX_PLATFORM_MAC
+ #define REX_PLATFORM_MAC 0
+ #endif
++#ifndef REX_PLATFORM_IOS
++#define REX_PLATFORM_IOS 0
++#endif
+ #ifndef REX_PLATFORM_WIN32
+ #define REX_PLATFORM_WIN32 0
+ #endif
+diff --git a/src/base/instance_lock_posix.cpp b/src/base/instance_lock_posix.cpp
+index 40aa6b0..595521f 100644
+--- a/src/base/instance_lock_posix.cpp
++++ b/src/base/instance_lock_posix.cpp
+@@ -8,6 +8,7 @@
+  *              See LICENSE file in the project root for full license text.
+  */
+ 
++#include <rex/platform.h>
+ #include <rex/platform/process.h>
+ 
+ #include <format>
+@@ -31,7 +32,11 @@ struct detail::LockHandle {
+ };
+ 
+ Result<InstanceLock> InstanceLock::Acquire(std::string_view name) {
++#if REX_PLATFORM_IOS
++  const std::string runtime_dir = GetEnvironmentValue("TMPDIR").value_or("");
++#else
+   const std::string runtime_dir = GetEnvironmentValue("XDG_RUNTIME_DIR").value_or("");
++#endif
+   const std::string_view directory = runtime_dir.empty() ? std::string_view("/tmp") : runtime_dir;
+   const std::string path = std::format("{}/rex-{}.lock", directory, name);
+   const i32 fd = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+diff --git a/src/base/memory_posix.cpp b/src/base/memory_posix.cpp
+index 1d7cd9f..9faf43c 100644
+--- a/src/base/memory_posix.cpp
++++ b/src/base/memory_posix.cpp
+@@ -199,7 +199,16 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+ #endif
+ 
+   int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_IOS
++  // iOS grants executable memory only to processes with a JIT entitlement or an attached
++  // debugger. Recompiled guest code is native code linked into the app, so nothing here may
++  // request execute access; refuse it explicitly instead of failing later in mmap.
++  if (access == PageAccess::kExecuteReadWrite || access == PageAccess::kExecuteReadOnly) {
++    errno = ENOTSUP;
++    return nullptr;
++  }
++#endif
++#if REX_PLATFORM_MAC && !REX_PLATFORM_IOS
+   if (access == PageAccess::kExecuteReadWrite || access == PageAccess::kExecuteReadOnly) {
+     flags |= MAP_JIT;
+   }
+diff --git a/src/base/relaunch_posix.cpp b/src/base/relaunch_posix.cpp
+index 157c9d8..cc93ad7 100644
+--- a/src/base/relaunch_posix.cpp
++++ b/src/base/relaunch_posix.cpp
+@@ -9,6 +9,7 @@
+  */
+ 
+ #include <rex/platform/process.h>
++#include <rex/platform.h>
+ 
+ #include <cerrno>
+ #include <cstring>
+@@ -26,6 +27,13 @@ namespace {
+ 
+ Result<void> Spawn(const std::string& exe, std::span<const std::string> args,
+                    const std::string& working_directory) {
++#if REX_PLATFORM_IOS
++  // iOS apps cannot create processes; the app shell restarts the runtime instead.
++  (void)exe;
++  (void)args;
++  (void)working_directory;
++  return Err<void>(ErrorCategory::kPlatform, "relaunching is not supported on iOS");
++#else
+   std::vector<std::string> storage;
+   storage.push_back(exe);
+   storage.insert(storage.end(), args.begin(), args.end());
+@@ -49,6 +57,7 @@ Result<void> Spawn(const std::string& exe, std::span<const std::string> args,
+     _exit(127);
+   }
+   return Ok();
++#endif
+ }
+ 
+ }  // namespace
+@@ -75,6 +84,9 @@ Result<void> Spawn(const std::string& exe, std::span<const std::string> args,
+ }
+ 
+ bool CanRelaunch() {
++#if REX_PLATFORM_IOS
++  return false;
++#endif
+   const auto desktop = GetEnvironmentValue("XDG_CURRENT_DESKTOP");
+   if (desktop && desktop->find("gamescope") != std::string::npos) {
+     return false;

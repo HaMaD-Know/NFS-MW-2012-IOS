@@ -1,0 +1,40 @@
+diff --git a/cmake/rexglue_install.cmake b/cmake/rexglue_install.cmake
+index 24db2b5..d8480e6 100644
+--- a/cmake/rexglue_install.cmake
++++ b/cmake/rexglue_install.cmake
+@@ -101,11 +101,14 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/rexglueModules-$<CONFIG>.cmake
+ )
+ 
+ # A Debug codegen tool runs an order of magnitude slower, so only Release is installed.
+-install(
+-  TARGETS rexglue
+-  EXPORT rexglueTargets
+-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} CONFIGURATIONS Release
+-)
++# iOS builds carry the runtime only; the codegen tool stays on the development host.
++if (NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
++  install(
++    TARGETS rexglue
++    EXPORT rexglueTargets
++    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} CONFIGURATIONS Release
++  )
++endif ()
+ 
+ # Install public headers
+ install(DIRECTORY include/rex DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+diff --git a/src/rexglue/CMakeLists.txt b/src/rexglue/CMakeLists.txt
+index 14a74b8..2cff536 100644
+--- a/src/rexglue/CMakeLists.txt
++++ b/src/rexglue/CMakeLists.txt
+@@ -26,6 +26,11 @@ target_link_libraries(rexglue PRIVATE rexcodegen tomlplusplus)
+ rex_target_pch(rexglue <CLI/CLI.hpp>)
+ 
+ add_executable(rex::rexglue ALIAS rexglue)
++if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
++  # The recompiler runs on the development host, never on the device. On iOS CMake would turn
++  # this executable into an app bundle; keep it out of the default build.
++  set_target_properties(rexglue PROPERTIES EXCLUDE_FROM_ALL TRUE)
++endif ()
+ add_dependencies(
+   rexglue
+   rexfilesystem

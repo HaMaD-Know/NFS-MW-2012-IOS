@@ -64,6 +64,16 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
 
+      # ReXGlue's toolchain action installs the Vulkan Memory Allocator header (vk_mem_alloc.h)
+      # on Windows but not on macOS, and configure stops without it (run 44043947564).
+      - name: Install Vulkan Memory Allocator header (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install vulkan-memory-allocator
+          inc="$(brew --prefix)/include"
+          test -f "$inc/vk_mem_alloc.h"
+          echo "EXTRA_CMAKE_ARGS=-DREXGLUE_VMA_INCLUDE_DIR=$inc" >> "$GITHUB_ENV"
+
       - name: Toolchain versions
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
@@ -76,7 +86,7 @@ jobs:
           cmake --preset ${{ matrix.platform }} \
             -DCMAKE_C_COMPILER="${{ matrix.cc }}" \
             -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}" \
-            -DREXGLUE_BUILD_TESTS=ON 2>&1 | tee "$RUNNER_TEMP/logs/configure.log"
+            -DREXGLUE_BUILD_TESTS=ON ${EXTRA_CMAKE_ARGS:-} 2>&1 | tee "$RUNNER_TEMP/logs/configure.log"
 
       - name: Build and install
         working-directory: rexglue-sdk

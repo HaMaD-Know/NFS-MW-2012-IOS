@@ -66,12 +66,19 @@ jobs:
 
       # ReXGlue's toolchain action installs the Vulkan Memory Allocator header (vk_mem_alloc.h)
       # on Windows but not on macOS, and configure stops without it (run 44043947564).
+      # Homebrew has no formula for it (run 44048668591), so take the single header from the
+      # official GPUOpen repository at a pinned release and verify its checksum.
       - name: Install Vulkan Memory Allocator header (macOS)
         if: runner.os == 'macOS'
+        env:
+          VMA_REF: v3.3.0   # commit 1d8f600fd424278486eade7ed3e877c99f0846b1
+          VMA_SHA256: 90ce12fc4a2466235a09ae02905dd0c13aee80c1bbf11b331ab61230c2ceb112
         run: |
-          brew install vulkan-memory-allocator
-          inc="$(brew --prefix)/include"
-          test -f "$inc/vk_mem_alloc.h"
+          inc="$RUNNER_TEMP/vma/include"
+          mkdir -p "$inc"
+          curl -fsSL -o "$inc/vk_mem_alloc.h" \
+            "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/${VMA_REF}/include/vk_mem_alloc.h"
+          echo "${VMA_SHA256}  $inc/vk_mem_alloc.h" | shasum -a 256 -c -
           echo "EXTRA_CMAKE_ARGS=-DREXGLUE_VMA_INCLUDE_DIR=$inc" >> "$GITHUB_ENV"
 
       - name: Toolchain versions

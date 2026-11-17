@@ -1,0 +1,36 @@
+// Runtime self-tests for Milestone N1-b (step B2).
+// They reproduce, with plain system calls, the three mechanisms the ReXGlue runtime relies on,
+// so that their behaviour on a real iPad is known before ReXGlue itself is ported:
+//   1. address space: the 4.5 GB guest reservation and its nine shared-memory views
+//      (copied from ReXGlue ebac1cf, src/kernel/memory.cpp kViewRanges / MapViewsMac)
+//   2. memory-fault handling: SIGBUS/SIGSEGV on a protected shared page, handled and resumed
+//      (as src/base/exception_handler_posix.cpp does for MMIO and write watches)
+//   3. fibers: getcontext / makecontext / swapcontext (src/base/fiber_posix.cpp)
+// No game code or data is involved.
+#ifndef NFSMW_SELFTEST_H
+#define NFSMW_SELFTEST_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** Receives one human-readable result line. Called synchronously on the test thread. */
+typedef void (*selftest_log_fn)(const char *line);
+
+/** Largest single PROT_NONE reservation and total reservable address space. 1 = can hold 4.5 GB. */
+int selftest_address_space(selftest_log_fn log);
+
+/** ReXGlue's guest layout: 4.5 GB shm_open object, 4.5 GB reservation, nine MAP_FIXED views, alias checks. */
+int selftest_guest_memory(selftest_log_fn log);
+
+/** Write and read faults on a protected shared page: caught, page unprotected, access resumed. */
+int selftest_fault_handling(selftest_log_fn log);
+
+/** ucontext fibers: two round trips between the calling thread and a fiber. */
+int selftest_fibers(selftest_log_fn log);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

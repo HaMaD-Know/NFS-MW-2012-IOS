@@ -20,17 +20,27 @@ final class ShellLog {
 
     func write(_ message: String) {
         logger.info("\(message, privacy: .public)")
-        guard let fileURL else { return }
         let line = "\(formatter.string(from: Date())) \(message)\n"
-        queue.async {
-            let data = Data(line.utf8)
-            if let handle = try? FileHandle(forWritingTo: fileURL) {
-                defer { try? handle.close() }
-                _ = try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
-            } else {
-                try? data.write(to: fileURL)
-            }
+        queue.async { self.append(line) }
+    }
+
+    /// Returns only after the line is on disk. Used before steps that might crash the app.
+    func writeSync(_ message: String) {
+        logger.info("\(message, privacy: .public)")
+        let line = "\(formatter.string(from: Date())) \(message)\n"
+        queue.sync { self.append(line) }
+    }
+
+    private func append(_ line: String) {
+        guard let fileURL else { return }
+        let data = Data(line.utf8)
+        if let handle = try? FileHandle(forWritingTo: fileURL) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+            try? handle.synchronize()
+        } else {
+            try? data.write(to: fileURL)
         }
     }
 }

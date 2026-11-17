@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var controllers: ControllerMonitor
     @EnvironmentObject private var stats: RenderStats
+    @ObservedObject private var selfTest = RuntimeSelfTest.shared
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -34,6 +35,20 @@ struct ContentView: View {
                 if let error = stats.error {
                     Text("Error: \(error)")
                         .foregroundStyle(.red)
+                }
+                Divider().frame(width: 360)
+                Button(selfTest.running ? "Runtime self-test running…" : "Run runtime self-test") {
+                    selfTest.run()
+                }
+                .disabled(selfTest.running)
+                .buttonStyle(.borderedProminent)
+                if !selfTest.summary.isEmpty {
+                    Text(selfTest.summary)
+                }
+                ForEach(selfTest.lines.suffix(16)) { line in
+                    Text(line.text)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(2)
                 }
                 Text("Log: Files › On My iPad › NFS MW Shell › shell-log.txt")
                     .font(.caption2)

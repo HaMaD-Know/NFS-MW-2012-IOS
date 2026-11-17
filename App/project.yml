@@ -45,3 +45,5 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.nfsmw2012ipad.shell
         PRODUCT_NAME: NFSMWShell
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/SelfTest/NFSMWShell-Bridging-Header.h
+        GCC_C_LANGUAGE_STANDARD: gnu17

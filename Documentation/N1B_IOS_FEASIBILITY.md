@@ -10,7 +10,18 @@ iOS yet.**
 | 2026-11-17 | B1 trial, unpatched | Configure fails with one error: `install TARGETS given no BUNDLE DESTINATION for MACOSX_BUNDLE executable target "rexglue"` (on iOS the recompiler CLI becomes an app bundle). Vulkan SDK, Iconv and all submodules are found for iOS | Run 44113373357 |
 | 2026-11-17 | B3 patches 0001–0002 | Configure passes; 905/925 build steps; 2 files fail: `mach_vm_region` (`<mach/mach_vm.h>` is unsupported in the iOS SDK) in `memory_posix.cpp` and `process_resources_posix.cpp` | Run 44114620284 |
 | 2026-11-17 | B3 patch 0003 | **925/925 steps, 0 compiler errors, 0 failed steps.** Every runtime module links as an iOS arm64 library. Linker warnings only: duplicate `libxxhashd.a` on the link line; `-undefined error` deprecated | Run 44116653662 |
-| 2026-11-17 | B2 self-test | Added to the iPad shell; builds | Run 44112115204; device results pending |
+| 2026-11-17 | B2 self-test | Added to the iPad shell; builds | Run 44112115204 |
+| 2026-11-17 | **B0 + B2 on the device** | iPad Pro 11" M2 (`iPad14,3`), iPadOS 26.6.1, free Apple ID. Shell: Metal "Apple M2 GPU", 2388 × 1668, runtime shader compile 214.6 ms, Xbox Wireless Controller connected, **5.00 GB** app memory at launch. Self-test, 8 identical runs: **Q1 address space PASS** (largest reservation 5.00 GB, total reservable 6 GB); **guest memory FAIL**: `shm_open` → EPERM; **Q4 fault handling not determined** (setup used `shm_open`); **Q3 fibers FAIL**: `getcontext` → ENOTSUP | Device log |
+
+### Device findings and their consequences (2026-11-17)
+
+| # | Finding | Consequence | Next action |
+|---|---|---|---|
+| D1 | `shm_open` is not permitted in the app sandbox | ReXGlue's guest memory (`CreateFileMappingHandle` → `shm_open`, then nine `MAP_SHARED` views) cannot work on iOS as written. **Blocker for T3.** This contradicts the MW 2005 mobile port's report that `shm_open` works on iOS (unverified; it may use a different path or entitlement) | Test two replacements on the device: (a) anonymous memory with mirror views made by Mach `vm_remap` (`copy = FALSE`); (b) a file in the app's tmp folder, unlinked after opening, mapped `MAP_SHARED` several times. Pick by correctness, then by performance |
+| D2 | `getcontext` returns ENOTSUP | ucontext fibers do not exist on iOS. **Blocker for T4** | Replace `fiber_posix.cpp`'s switch on iOS with a small arm64 context switch (callee-saved x19–x28, fp, lr, sp, d8–d15) |
+| D3 | Fault handling untested | Needed for MMIO and GPU write-watching | Re-run on top of the chosen D1 backing |
+| D4 | Total reservable address space is 6 GB | The 4.5 GB guest block fits, but leaves ~1.5 GB for MoltenVK, Metal and the heaps of a full app | Measure again once the runtime starts (B7). Fallback: the extended-virtual-addressing entitlement, which needs a paid developer account |
+| D5 | 5.00 GB of memory available under a free Apple ID | Better than expected; enough headroom for a 512 MB-RAM console game plus the runtime | None now |
 
 Patch series (`patches/rexglue-ios/`, applied to `ebac1cf`):
 - `0001-ios-platform-identity`: `REX_PLATFORM_IOS`, the `ios-arm64` platform, iOS 17 deployment

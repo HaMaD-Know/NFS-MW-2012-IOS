@@ -45,6 +45,11 @@ GameIntegration/ExecutableAnalysis/*.json
 Documentation/*
 !Documentation/BUILD_GUIDE.md
 !Documentation/PUBLIC_STATUS.md
+!Documentation/N1B_IOS_FEASIBILITY.md
+!Documentation/BYOG_DESIGN.md
+!Documentation/SUPPORTED_GAME_DATA.md
+!Documentation/ARCHITECTURE.md
+!Documentation/ROADMAP.md
 
 # Signing material and secrets
 *.p12

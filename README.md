@@ -17,6 +17,13 @@ graphics and game controllers for input.
   publisher's code. It stays on the machine that produced it and is never committed,
   uploaded to CI or released. `.gitignore` enforces this.
 - **No DRM circumvention**, and no help obtaining game files.
+- **Bring Your Own Game.** The app imports the user's own Xbox 360 game data through the iPadOS
+  Files picker, verifies it, and keeps it on the device. User files are never uploaded
+  anywhere. The game's recompiled code is a *personal module* built by each user from their
+  own copy; it is never in the public IPA. See
+  [`Documentation/BYOG_DESIGN.md`](Documentation/BYOG_DESIGN.md) and
+  [`Documentation/SUPPORTED_GAME_DATA.md`](Documentation/SUPPORTED_GAME_DATA.md).
+  **Planned; not implemented yet.**
 - Not affiliated with or endorsed by Electronic Arts or Criterion Games. *Need for Speed*
   and *Most Wanted* are trademarks of Electronic Arts Inc.
 

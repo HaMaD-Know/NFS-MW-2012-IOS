@@ -16,6 +16,8 @@ permissions:
 env:
   # rexglue/rexglue-sdk main, 2026-11-14. Change deliberately, and record why.
   REXGLUE_REF: ebac1cf0d04bab0042a5dd6148b34ab3953e9c0d
+  # The presets use Ninja Multi-Config. Build and test one configuration, as a project would.
+  BUILD_CONFIG: Debug
 
 jobs:
   sdk:
@@ -46,6 +48,15 @@ jobs:
           submodules: recursive
           path: rexglue-sdk
 
+      # ReXGlue requires AppleClang 17 or newer (Xcode 26+). Use the newest Xcode on the runner.
+      - name: Select newest Xcode (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ls -d /Applications/Xcode*.app || true
+          newest=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$newest" ]; then sudo xcode-select -s "$newest/Contents/Developer"; fi
+          xcodebuild -version
+
       # ReXGlue's own toolchain action: LLVM 20 + CMake + Ninja + Vulkan SDK on Windows,
       # CMake + Ninja + Vulkan SDK on macOS.
       - name: Set up toolchain
@@ -53,39 +64,63 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
 
+      - name: Toolchain versions
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          { "${{ matrix.cxx }}" --version; cmake --version; ninja --version; echo "VULKAN_SDK=${VULKAN_SDK:-unset}"; } 2>&1 | tee "$RUNNER_TEMP/logs/versions.log"
+
       - name: Configure
         working-directory: rexglue-sdk
         run: |
-          start=$(date +%s); echo "CONFIGURE_START=$start" >> "$GITHUB_ENV"
+          set -o pipefail
           cmake --preset ${{ matrix.platform }} \
             -DCMAKE_C_COMPILER="${{ matrix.cc }}" \
             -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}" \
-            -DREXGLUE_BUILD_TESTS=ON
+            -DREXGLUE_BUILD_TESTS=ON 2>&1 | tee "$RUNNER_TEMP/logs/configure.log"
 
       - name: Build and install
         working-directory: rexglue-sdk
         run: |
+          set -o pipefail
           start=$(date +%s)
-          cmake --build out/build/${{ matrix.platform }} --target install --parallel
+          cmake --build out/build/${{ matrix.platform }} --config "$BUILD_CONFIG" --target install --parallel \
+            2>&1 | tee "$RUNNER_TEMP/logs/build.log"
           echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
 
       - name: Run unit tests
         working-directory: rexglue-sdk
-        run: ctest --test-dir out/build/${{ matrix.platform }} --output-on-failure --no-tests=error
+        run: |
+          set -o pipefail
+          ctest --test-dir out/build/${{ matrix.platform }} -C "$BUILD_CONFIG" --output-on-failure --no-tests=error \
+            2>&1 | tee "$RUNNER_TEMP/logs/test.log"
 
       - name: Check the rexglue command-line tool
         working-directory: rexglue-sdk
         run: |
+          set -o pipefail
           bin="out/install/${{ matrix.platform }}/bin"
-          ls -l "$bin"
-          "$bin/rexglue" --help | head -40
+          { ls -l "$bin"; "$bin/rexglue" --help | head -40; } 2>&1 | tee "$RUNNER_TEMP/logs/cli.log"
+
+      # Job logs need a GitHub sign-in to read. Annotations do not, so publish the end of
+      # every log as one annotation per file.
+      - name: Publish log tails as annotations
+        if: always()
+        run: |
+          for f in "$RUNNER_TEMP"/logs/*.log; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" .log)
+            body=$(tail -n 60 "$f" | sed -e 's/%/%25/g' -e 's/\r//g' | awk 'BEGIN{ORS="%0A"} {print}')
+            level=notice
+            if grep -qiE '(^|[^a-z])(error|failed|fatal)([^a-z]|$)' "$f"; then level=warning; fi
+            echo "::${level} title=${{ matrix.platform }} ${name} (last 60 lines)::${body}"
+          done
 
       - name: Summary
         if: always()
         working-directory: rexglue-sdk
         run: |
           {
-            echo "### ReXGlue SDK — ${{ matrix.platform }}"
+            echo "### ReXGlue SDK — ${{ matrix.platform }} (${BUILD_CONFIG})"
             echo "- Commit: \`${REXGLUE_REF}\`"
             echo "- Build and install time: ${BUILD_SECONDS:-n/a} s"
             echo "- Build tree size: $(du -sh out/build 2>/dev/null | cut -f1)"

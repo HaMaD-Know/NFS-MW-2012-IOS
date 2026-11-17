@@ -120,31 +120,26 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/logs/test.log"
 
       # Upstream builds macOS with tests off, so failures there have no upstream record.
-      # Rerun the first few failed tests under lldb to capture a backtrace.
-      - name: Backtraces of failed tests (macOS)
-        if: ${{ !cancelled() && runner.os == 'macOS' && steps.tests.outcome == 'failure' }}
+      # Run 44057051894 left two timing-based tests failing on macOS (a Ke mutant handoff
+      # and the frame limiter). Rerun each failed test 20 times, alone, to tell a flaky
+      # timing test from a deterministic failure. This step reports; it never passes the job.
+      - name: Repeat failed tests
+        if: ${{ !cancelled() && steps.tests.outcome == 'failure' }}
         working-directory: rexglue-sdk
+        env:
+          SDL_VIDEO_DRIVER: offscreen
+          SDL_AUDIO_DRIVER: dummy
         run: |
           dir="out/build/${{ matrix.platform }}"
-          ctest --test-dir "$dir" -C "$BUILD_CONFIG" --show-only=json-v1 > "$RUNNER_TEMP/tests.json"
-          failed=$(cat "$dir"/Testing/Temporary/LastTestsFailed*.log | cut -d: -f2- | head -3)
-          echo "$failed" | while IFS= read -r name; do
-            [ -n "$name" ] || continue
-            echo "===== $name"
-            python3 - "$RUNNER_TEMP/tests.json" "$name" > "$RUNNER_TEMP/cmd.txt" <<'PY'
-          import json, sys
-          for t in json.load(open(sys.argv[1]))["tests"]:
-              if t["name"] == sys.argv[2]:
-                  print("\0".join(t["command"]))
-                  for p in t.get("properties", []):
-                      if p["name"] == "WORKING_DIRECTORY":
-                          print("WD=" + p["value"], file=sys.stderr)
-          PY
-            tr '\0' '\n' < "$RUNNER_TEMP/cmd.txt" | head -c 2000; echo
-            cmd=()   # macOS /bin/bash is 3.2: no mapfile
-            while IFS= read -r a; do cmd+=("$a"); done < <(tr '\0' '\n' < "$RUNNER_TEMP/cmd.txt")
-            lldb --batch -o run -k "bt 40" -k quit -- "${cmd[@]}" 2>&1 | tail -n 80 || true
-          done 2>&1 | tee "$RUNNER_TEMP/logs/backtrace.log"
+          cat "$dir"/Testing/Temporary/LastTestsFailed*.log | head -10 | while IFS=: read -r num name; do
+            [ -n "$num" ] || continue
+            pass=0; fail=0
+            for i in $(seq 1 20); do
+              if ctest --test-dir "$dir" -C "$BUILD_CONFIG" -I "$num,$num" > /dev/null 2>&1; then
+                pass=$((pass + 1)); else fail=$((fail + 1)); fi
+            done
+            echo "#$num $name: $pass passed, $fail failed out of 20 runs alone"
+          done 2>&1 | tee "$RUNNER_TEMP/logs/repeat.log"
 
       # The CLI is not installed; the build writes it to out/<platform>/<config>/ with a "d"
       # suffix in Debug (rex_config_postfix in src/rexglue/CMakeLists.txt).

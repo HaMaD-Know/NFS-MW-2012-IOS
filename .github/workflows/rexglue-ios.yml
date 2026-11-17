@@ -1,0 +1,218 @@
+# N1-b trial: build the ReXGlue runtime for iPadOS arm64 (device SDK) at the pinned commit.
+# Optionally applies the patch series in patches/rexglue-ios/ (empty series = unpatched trial).
+# The build keeps going after errors so that every failure is collected and reported.
+# No game files are involved. Success here would only mean "compiles for iOS", never "runs on an iPad".
+name: ReXGlue iOS trial
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_patches:
+        description: "Apply patches/rexglue-ios/*.patch before configuring"
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/rexglue-ios.yml"
+      - "patches/rexglue-ios/**"
+      - "cmake/ios/**"
+
+permissions:
+  contents: read
+
+env:
+  REXGLUE_REF: ebac1cf0d04bab0042a5dd6148b34ab3953e9c0d
+  IOS_DEPLOYMENT_TARGET: "17.0"
+
+jobs:
+  ios-arm64:
+    runs-on: macos-26
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out this project (patch series)
+        uses: actions/checkout@v4
+        with:
+          path: project
+
+      - name: Check out ReXGlue SDK at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: rexglue/rexglue-sdk
+          ref: ${{ env.REXGLUE_REF }}
+          submodules: recursive
+          path: rexglue-sdk
+
+      - name: Select newest Xcode
+        run: |
+          newest=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$newest" ]; then sudo xcode-select -s "$newest/Contents/Developer"; fi
+          xcodebuild -version
+          echo "IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)" >> "$GITHUB_ENV"
+
+      # Host tools (CMake, Ninja) and the LunarG Vulkan SDK, which also ships MoltenVK for iOS.
+      - name: Set up toolchain
+        uses: ./rexglue-sdk/.github/actions/setup-toolchain
+        with:
+          platform: mac-arm64
+
+      - name: Vulkan Memory Allocator header (pinned, checksum-verified)
+        env:
+          VMA_REF: v3.3.0
+          VMA_SHA256: 90ce12fc4a2466235a09ae02905dd0c13aee80c1bbf11b331ab61230c2ceb112
+        run: |
+          inc="$RUNNER_TEMP/vma/include"; mkdir -p "$inc"
+          curl -fsSL -o "$inc/vk_mem_alloc.h" \
+            "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/${VMA_REF}/include/vk_mem_alloc.h"
+          echo "${VMA_SHA256}  $inc/vk_mem_alloc.h" | shasum -a 256 -c -
+          echo "VMA_INC=$inc" >> "$GITHUB_ENV"
+
+      - name: Record toolchain and Vulkan SDK layout
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            xcodebuild -version; xcrun --sdk iphoneos --show-sdk-version; cmake --version | head -1; ninja --version
+            echo "VULKAN_SDK=${VULKAN_SDK:-unset}"
+            root="$(dirname "${VULKAN_SDK:-/nonexistent}")"
+            echo "--- SDK root: $root"; ls "$root" 2>&1
+            echo "--- iOS folder:"; ls -R "$root/iOS" 2>&1 | head -40
+          } 2>&1 | tee "$RUNNER_TEMP/logs/toolchain.log"
+
+      - name: Apply patch series
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.apply_patches }}
+        working-directory: rexglue-sdk
+        run: |
+          shopt -s nullglob
+          patches=(../project/patches/rexglue-ios/*.patch)
+          echo "Patches found: ${#patches[@]}" | tee "$RUNNER_TEMP/logs/patches.log"
+          for p in "${patches[@]}"; do
+            echo "== applying $(basename "$p")" | tee -a "$RUNNER_TEMP/logs/patches.log"
+            git apply --whitespace=nowarn --verbose "$p" 2>&1 | tee -a "$RUNNER_TEMP/logs/patches.log"
+          done
+          echo "PATCH_COUNT=${#patches[@]}" >> "$GITHUB_ENV"
+
+      - name: Configure for iOS arm64
+        id: configure
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          toolchain_arg=""
+          if [ -f project/cmake/ios/ios-arm64.cmake ]; then
+            toolchain_arg="-DCMAKE_TOOLCHAIN_FILE=$PWD/project/cmake/ios/ios-arm64.cmake"
+          fi
+          cmake -S rexglue-sdk -B build-ios -G Ninja \
+            $toolchain_arg \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=/usr/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+            -DCMAKE_CXX_STANDARD=23 \
+            -DCMAKE_C_FLAGS="-march=armv8-a" \
+            -DCMAKE_CXX_FLAGS="-march=armv8-a" \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
+            -DREXGLUE_BUILD_TESTS=OFF \
+            -DREXGLUE_ENABLE_TRACY=OFF \
+            -DREXGLUE_VMA_INCLUDE_DIR="$VMA_INC" \
+            2>&1 | tee "$RUNNER_TEMP/logs/configure.log"
+
+      - name: Build (keep going after errors)
+        id: build
+        if: steps.configure.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          start=$(date +%s)
+          cmake --build build-ios --parallel -- -k 0 2>&1 | tee "$RUNNER_TEMP/logs/build.log"
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      - name: Inspect produced binaries
+        if: always()
+        run: |
+          {
+            echo "Libraries and executables produced:"
+            find build-ios \( -name '*.dylib' -o -name '*.a' -o -perm -111 -type f \) \
+              -not -path '*/CMakeFiles/*' -not -name '*.sh' 2>/dev/null | sort | head -100 | while read -r f; do
+              plat=$(xcrun vtool -show-build "$f" 2>/dev/null | awk '/platform/{print $2; exit}')
+              echo "  $f  [$(lipo -archs "$f" 2>/dev/null)] platform=${plat:-n/a}"
+            done
+          } 2>&1 | tee "$RUNNER_TEMP/logs/binaries.log"
+
+      # Turns the logs into a compact census of distinct errors, published as annotations
+      # (readable without signing in) and as the job summary.
+      - name: Error census
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, re, collections, pathlib
+          logs = pathlib.Path(os.environ["RUNNER_TEMP"]) / "logs"
+          def read(name):
+              p = logs / name
+              return p.read_text(errors="replace") if p.exists() else ""
+          configure, build = read("configure.log"), read("build.log")
+          cmake_errors = re.findall(r"CMake Error[^\n]*\n(?:  [^\n]*\n)+", configure)
+          comp = collections.OrderedDict()
+          for m in re.finditer(r"^(\S+?):(\d+):\d+: (fatal error|error): (.*)$", build, re.M):
+              path = m.group(1).split("rexglue-sdk/")[-1]
+              key = (path, m.group(4)[:200])
+              comp.setdefault(key, m.group(2))
+          failed = re.findall(r"^FAILED: (\S+)", build, re.M)
+          link = re.findall(r"^(ld: .*|clang\S*: error: linker.*|Undefined symbols.*)$", build, re.M)
+          by_dir = collections.Counter("/".join(k[0].split("/")[:2]) for k in comp)
+          out = []
+          out.append(f"### ReXGlue iOS arm64 trial (patches applied: {os.environ.get('PATCH_COUNT','0')})")
+          out.append(f"- CMake configure errors: {len(cmake_errors)}")
+          out.append(f"- Failed build steps: {len(failed)}")
+          out.append(f"- Distinct compiler errors: {len(comp)}")
+          out.append(f"- Linker messages: {len(link)}")
+          if by_dir:
+              out.append("- Errors by directory: " + ", ".join(f"{d} ({n})" for d, n in by_dir.most_common(20)))
+          out.append("")
+          for e in cmake_errors[:15]:
+              out.append("```\n" + e.strip()[:1500] + "\n```")
+          for (path, msg), line in list(comp.items())[:80]:
+              out.append(f"- `{path}:{line}` {msg}")
+          for l in list(dict.fromkeys(link))[:20]:
+              out.append(f"- link: {l[:300]}")
+          text = "\n".join(out)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(text + "\n")
+          def annotate(title, body):
+              body = body.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+              print(f"::warning title={title}::{body[:60000]}")
+          annotate("iOS trial: summary", "\n".join(out[:6 + (1 if by_dir else 0)]))
+          if cmake_errors:
+              annotate("iOS trial: CMake errors", "\n\n".join(e.strip() for e in cmake_errors[:10]))
+          lines = [f"{p}:{l} {m}" for (p, m), l in comp.items()]
+          for i in range(0, min(len(lines), 240), 60):
+              annotate(f"iOS trial: compiler errors {i+1}-{min(i+60, len(lines))}", "\n".join(lines[i:i+60]))
+          if link:
+              annotate("iOS trial: linker", "\n".join(list(dict.fromkeys(link))[:40]))
+          tail = (build or configure).splitlines()[-40:]
+          annotate("iOS trial: last 40 log lines", "\n".join(tail))
+          PY
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rexglue-ios-trial-logs
+          path: ${{ runner.temp }}/logs
+          retention-days: 14
+
+      # The job is a probe: it reports, it does not gate. Mark the run red if nothing built.
+      - name: Result
+        if: always()
+        run: |
+          echo "configure=${{ steps.configure.outcome }} build=${{ steps.build.outcome }}"
+          if [ "${{ steps.configure.outcome }}" != "success" ] || [ "${{ steps.build.outcome }}" != "success" ]; then
+            echo "::error::ReXGlue does not yet build for iOS arm64 (expected for the trial; see the error census)."
+            exit 1
+          fi

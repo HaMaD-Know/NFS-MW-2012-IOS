@@ -13,6 +13,8 @@ iOS yet.**
 | 2026-11-17 | B2 self-test | Added to the iPad shell; builds | Run 44112115204 |
 | 2026-11-17 | **B0 + B2 on the device** | iPad Pro 11" M2 (`iPad14,3`), iPadOS 26.6.1, free Apple ID. Shell: Metal "Apple M2 GPU", 2388 × 1668, runtime shader compile 214.6 ms, Xbox Wireless Controller connected, **5.00 GB** app memory at launch. Self-test, 8 identical runs: **Q1 address space PASS** (largest reservation 5.00 GB, total reservable 6 GB); **guest memory FAIL**: `shm_open` → EPERM; **Q4 fault handling not determined** (setup used `shm_open`); **Q3 fibers FAIL**: `getcontext` → ENOTSUP | Device log |
 
+| 2026-11-17 | Replacements, CI | Self-test v2 (shell 0.0.2) and patches 0004–0005. **macOS runner logic check, all pass:** memory A (temporary file), B (Mach memory entry), C (`vm_remap`): nine views, mirrors, fault handling on a mirrored page; 256 MB write at 1,106 / 5,851 / 11,361 MB/s respectively. arm64 fibers: round trips, fiber-to-fiber, ~200 KB stack, 8.5 ns per switch. **iOS trial with patches 0001–0005: 925/925 steps, 0 errors.** First logic run found a bug in the test's 0xE0000000 mirror address (fixed). **None of this is verified on the iPad yet** | Runs 44135637100, 44135637165 |
+
 ### Device findings and their consequences (2026-11-17)
 
 | # | Finding | Consequence | Next action |

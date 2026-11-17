@@ -1,0 +1,112 @@
+diff --git a/src/base/memory_posix.cpp b/src/base/memory_posix.cpp
+index 9faf43c..3d214a1 100644
+--- a/src/base/memory_posix.cpp
++++ b/src/base/memory_posix.cpp
+@@ -37,7 +37,10 @@
+ 
+ #if REX_PLATFORM_MAC
+ #include <mach/mach.h>
++#include <TargetConditionals.h>
++#if !TARGET_OS_IPHONE
+ #include <mach/mach_vm.h>
++#endif
+ #include <mach/vm_region.h>
+ #endif  // REX_PLATFORM_MAC
+ 
+@@ -286,6 +289,30 @@ bool Protect(void* base_address, size_t length, PageAccess access, PageAccess* o
+   return ret == 0;
+ }
+ 
++#if REX_PLATFORM_MAC
++namespace {
++// <mach/mach_vm.h> is unavailable in the iOS SDK. vm_region_64 is the same query with
++// natural-width types, which are 64-bit on arm64, so the wrapper is lossless there.
++kern_return_t RexMachVmRegion(mach_vm_address_t* address, mach_vm_size_t* size,
++                              vm_region_basic_info_data_64_t* info,
++                              mach_msg_type_number_t* info_count, mach_port_t* object_name) {
++#if TARGET_OS_IPHONE
++  vm_address_t region_address = static_cast<vm_address_t>(*address);
++  vm_size_t region_size = 0;
++  const kern_return_t kr =
++      vm_region_64(mach_task_self(), &region_address, &region_size, VM_REGION_BASIC_INFO_64,
++                   reinterpret_cast<vm_region_info_t>(info), info_count, object_name);
++  *address = static_cast<mach_vm_address_t>(region_address);
++  *size = static_cast<mach_vm_size_t>(region_size);
++  return kr;
++#else
++  return mach_vm_region(mach_task_self(), address, size, VM_REGION_BASIC_INFO_64,
++                        reinterpret_cast<vm_region_info_t>(info), info_count, object_name);
++#endif
++}
++}  // namespace
++#endif
++
+ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
+ #if REX_PLATFORM_MAC
+   mach_vm_address_t address = reinterpret_cast<mach_vm_address_t>(base_address);
+@@ -294,9 +321,7 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
+   mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
+   mach_port_t object_name;
+ 
+-  kern_return_t kr =
+-      mach_vm_region(mach_task_self(), &address, &region_size, VM_REGION_BASIC_INFO_64,
+-                     reinterpret_cast<vm_region_info_t>(&info), &info_count, &object_name);
++  kern_return_t kr = RexMachVmRegion(&address, &region_size, &info, &info_count, &object_name);
+   if (kr != KERN_SUCCESS) {
+     return false;
+   }
+diff --git a/src/base/process_resources_posix.cpp b/src/base/process_resources_posix.cpp
+index 94d3d88..55d5b9f 100644
+--- a/src/base/process_resources_posix.cpp
++++ b/src/base/process_resources_posix.cpp
+@@ -24,7 +24,10 @@
+ 
+ #if defined(__APPLE__)
+ #include <mach/mach.h>
++#include <TargetConditionals.h>
++#if !TARGET_OS_IPHONE
+ #include <mach/mach_vm.h>
++#endif
+ #include <mach/vm_region.h>
+ #endif
+ 
+@@ -59,6 +62,28 @@ long CountOpenDescriptors() {
+ 
+ #if defined(__APPLE__)
+ 
++namespace {
++// <mach/mach_vm.h> is unavailable in the iOS SDK. vm_region_64 is the same query with
++// natural-width types, which are 64-bit on arm64, so the wrapper is lossless there.
++kern_return_t RexMachVmRegion(mach_vm_address_t* address, mach_vm_size_t* size,
++                              vm_region_basic_info_data_64_t* info,
++                              mach_msg_type_number_t* info_count, mach_port_t* object_name) {
++#if TARGET_OS_IPHONE
++  vm_address_t region_address = static_cast<vm_address_t>(*address);
++  vm_size_t region_size = 0;
++  const kern_return_t kr =
++      vm_region_64(mach_task_self(), &region_address, &region_size, VM_REGION_BASIC_INFO_64,
++                   reinterpret_cast<vm_region_info_t>(info), info_count, object_name);
++  *address = static_cast<mach_vm_address_t>(region_address);
++  *size = static_cast<mach_vm_size_t>(region_size);
++  return kr;
++#else
++  return mach_vm_region(mach_task_self(), address, size, VM_REGION_BASIC_INFO_64,
++                        reinterpret_cast<vm_region_info_t>(info), info_count, object_name);
++#endif
++}
++}  // namespace
++
+ long CountMemoryRegions() {
+   mach_vm_address_t address = 0;
+   mach_vm_size_t size = 0;
+@@ -67,9 +92,7 @@ long CountMemoryRegions() {
+   while (true) {
+     mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
+     mach_port_t object_name = MACH_PORT_NULL;
+-    const kern_return_t status =
+-        mach_vm_region(mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64,
+-                       reinterpret_cast<vm_region_info_t>(&info), &info_count, &object_name);
++    const kern_return_t status = RexMachVmRegion(&address, &size, &info, &info_count, &object_name);
+     if (status != KERN_SUCCESS) {
+       break;
+     }

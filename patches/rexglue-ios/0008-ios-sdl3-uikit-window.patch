@@ -1,5 +1,5 @@
 diff --git a/src/ui/sdl3/sdl3_ui_driver.cpp b/src/ui/sdl3/sdl3_ui_driver.cpp
-index 035393b..b95c56f 100644
+index 035393b..9a262a4 100644
 --- a/src/ui/sdl3/sdl3_ui_driver.cpp
 +++ b/src/ui/sdl3/sdl3_ui_driver.cpp
 @@ -423,7 +423,11 @@ Result<void> SDL3UIDriver::Initialize(IDriverContext& context) {
@@ -15,7 +15,19 @@ index 035393b..b95c56f 100644
    if (driver.empty()) {
      driver = "cocoa";
    }
-@@ -714,6 +718,21 @@ Result<NativeWindow> SDL3UIDriver::GetNativeWindow() const {
+@@ -510,7 +514,10 @@ Result<void> SDL3UIDriver::OpenWindow(const WindowConfig& config) {
+     s.ApplyFullscreenMode();
+     SDL_SetWindowFullscreen(s.window, true);
+   }
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC && !REX_PLATFORM_IOS
++  // macOS keyboard press-and-hold. Not on iOS: there the preferences cache keeps this module's
++  // CFSTR constant, and once the module unloads the next preferences access crashes (shell
++  // 0.0.8 on the iPad, 2026-11-18).
+   CFPreferencesSetAppValue(CFSTR("ApplePressAndHoldEnabled"), kCFBooleanFalse,
+                            kCFPreferencesCurrentApplication);
+   CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication);
+@@ -714,6 +721,21 @@ Result<NativeWindow> SDL3UIDriver::GetNativeWindow() const {
  #endif
      return result;
    }

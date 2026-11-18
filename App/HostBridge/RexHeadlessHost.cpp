@@ -41,6 +41,7 @@ namespace {
 using LogFn = void (*)(const char *line);
 
 LogFn g_log = nullptr;
+void *g_sdl = nullptr;  // libSDL3, the same copy ReXGlue's SDL3 drivers use
 
 void Say(std::string_view text) {
   if (g_log) {
@@ -148,6 +149,7 @@ std::filesystem::path OwnFolder() {
 void TellSDLMainIsReady() {
   const std::filesystem::path sdl = OwnFolder() / "libSDL3d.0.dylib";
   void *handle = dlopen(sdl.c_str(), RTLD_NOW | RTLD_GLOBAL);
+  g_sdl = handle;
   if (!handle) {
     const char *error = dlerror();
     Say(std::string("  Could not load SDL: ") + (error ? error : "unknown error"));
@@ -172,6 +174,42 @@ std::string PadText(const rex::hid::PadState &pad) {
   return text;
 }
 
+// What SDL itself sees, to tell "no controller found" from "ReXGlue hides its input".
+std::string SDLGamepads() {
+  if (!g_sdl) return "SDL not loaded";
+  using GetGamepadsFn = std::uint32_t *(*)(int *count);
+  using NameFn = const char *(*)(std::uint32_t id);
+  using FreeFn = void (*)(void *memory);
+  auto get = reinterpret_cast<GetGamepadsFn>(dlsym(g_sdl, "SDL_GetGamepads"));
+  auto name = reinterpret_cast<NameFn>(dlsym(g_sdl, "SDL_GetGamepadNameForID"));
+  auto release = reinterpret_cast<FreeFn>(dlsym(g_sdl, "SDL_free"));
+  if (!get || !name || !release) return "SDL gamepad functions not found";
+  int count = 0;
+  std::uint32_t *ids = get(&count);
+  std::string text = std::to_string(count) + " gamepad" + (count == 1 ? "" : "s");
+  for (int i = 0; ids && i < count; i++) {
+    const char *pad_name = name(ids[i]);
+    text += std::string(i ? ", " : ": ") + (pad_name ? pad_name : "unnamed");
+  }
+  if (ids) release(ids);
+  return text;
+}
+
+const char *PadTypeName(rex::hid::PadType type) {
+  switch (type) {
+    case rex::hid::PadType::kUnknown: return "unknown";
+    case rex::hid::PadType::kStandard: return "standard";
+    case rex::hid::PadType::kX360: return "Xbox 360";
+    case rex::hid::PadType::kXOne: return "Xbox One/Series";
+    case rex::hid::PadType::kPS3: return "PS3";
+    case rex::hid::PadType::kPS4: return "PS4";
+    case rex::hid::PadType::kPS5: return "PS5";
+    case rex::hid::PadType::kSwitchPro: return "Switch Pro";
+    case rex::hid::PadType::kSwitchJoyCon: return "Joy-Con";
+  }
+  return "other";
+}
+
 // Runs the window for `seconds`, reporting frames and the first controller once a second.
 void RunWindow(Host &app, int seconds) {
   rex::gpu::IGraphicsSystem &graphics = app.GetGraphics();
@@ -188,6 +226,7 @@ void RunWindow(Host &app, int seconds) {
   std::uint64_t loops = 0;
   std::uint32_t last_packet = 0;
   std::string last_pad_error;
+  std::string last_devices;
   bool ended = false;
   while (Clock::now() - start < std::chrono::seconds(seconds)) {
     if (!app.RunFrame()) {
@@ -204,6 +243,20 @@ void RunWindow(Host &app, int seconds) {
                                             .count()) +
                          "s UI loops " + std::to_string(loops) + ", frames " +
                          std::to_string(stats.frame_count);
+      std::string devices = "SDL sees " + SDLGamepads();
+      if (const auto info = input.GetPadInfo(0)) {
+        char ids[48];
+        std::snprintf(ids, sizeof ids, " %04x:%04x", static_cast<unsigned>(info->vendor),
+                      static_cast<unsigned>(info->product));
+        devices += std::string("; ReXGlue pad 1: ") + PadTypeName(info->type) + ids;
+      } else {
+        devices += "; ReXGlue pad 1: " + info.error().GetDescription();
+      }
+      devices += ui.IsFocused() ? "; window focused" : "; window NOT focused";
+      if (devices != last_devices) {
+        Say("  " + devices);
+        last_devices = devices;
+      }
       const auto pad = input.GetState(0);
       if (pad) {
         line += "; controller 1: " + PadText(pad->state);

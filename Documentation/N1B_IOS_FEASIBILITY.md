@@ -15,6 +15,15 @@ iOS yet.**
 
 | 2026-11-17 | Replacements, CI | Self-test v2 (shell 0.0.2) and patches 0004–0005. **macOS runner logic check, all pass:** memory A (temporary file), B (Mach memory entry), C (`vm_remap`): nine views, mirrors, fault handling on a mirrored page; 256 MB write at 1,106 / 5,851 / 11,361 MB/s respectively. arm64 fibers: round trips, fiber-to-fiber, ~200 KB stack, 8.5 ns per switch. **iOS trial with patches 0001–0005: 925/925 steps, 0 errors.** First logic run found a bug in the test's 0xE0000000 mirror address (fixed). **None of this is verified on the iPad yet** | Runs 44135637100, 44135637165 |
 
+| 2026-11-18 | **Self-test v2 on the device** | iPad Pro M2, iPadOS 26.6.1, shell 0.0.2, two identical runs. **All replacements PASS.** Memory A (tmp file): mirrors ok, faults ok, 256 MB at 5.4–6.2 GB/s, *not* counted in available memory. Memory B (Mach entry): ok, 15.0–15.2 GB/s, counted (−0.25 GB). Memory C (`vm_remap`): ok, 15.3–15.5 GB/s, counted. arm64 fibers: all checks ok, 6.5–6.7 ns/switch. Originals still fail (`shm_open` EPERM, `getcontext` ENOTSUP) | Device log |
+
+**Resolution of D1–D3 (on the device, 2026-11-18):** D1 has three working replacements; D2 has a working
+replacement; D3 (fault handling) passes on all three backings. Recommended backing for ReXGlue:
+**B, the Mach memory entry**. It is as fast as C, keeps ReXGlue's "one object, many views" model, and
+its memory is accounted honestly. A stays as a fallback: its pages are file-backed and may be written
+back to flash under pressure, a stutter and wear risk for a game. Patch 0004 currently implements A
+and should move to B. None of this has yet run *inside* ReXGlue on the device (B7).
+
 ### Device findings and their consequences (2026-11-17)
 
 | # | Finding | Consequence | Next action |

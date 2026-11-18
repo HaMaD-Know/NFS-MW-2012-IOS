@@ -17,7 +17,10 @@ Last updated: 2026-11-17.
 | Runtime self-test: guest memory via `shm_open` (ReXGlue's method) | **FAIL** — `shm_open`: Operation not permitted (errno 1). POSIX shared memory is blocked for this app. **Blocker**; an alternative backing is needed | same |
 | Runtime self-test: memory-fault handling | **Not determined** — the test's setup also used `shm_open` and failed before the fault test ran | same |
 | Runtime self-test: ucontext fibers (ReXGlue's method) | **FAIL** — `getcontext`: Operation not supported (errno 45). **Blocker**; needs a custom arm64 context switch | same |
-| Replacement guest memory (A temporary file / B Mach memory entry / C `vm_remap`) and arm64 fibers | **Pass on the macOS CI runner only** (logic check). **Not yet tested on the iPad**; no claim that they work on iPadOS | Run 44135637100 |
+| Replacement guest memory on the iPad: A temporary file / B Mach memory entry / C `vm_remap` | **All three PASS on the M2 iPad** (iPadOS 26.6.1, two identical runs): ReXGlue's 4.5 GB nine-view layout, all mirrors consistent, fault handling with resume on a mirrored page (SIGBUS). 256 MB write: A ~5.4–6.2 GB/s, not counted against app memory; B ~15.0–15.2 GB/s and C ~15.3–15.5 GB/s, counted (4.93 → 4.68 GB) | Shell 0.0.2 (run 44135637100), device log 2026-11-18 |
+| Memory-fault handling on the iPad | **PASS** (write and read faults caught, page unprotected, access resumed) | same |
+| arm64 fiber switch on the iPad (replacement for ucontext) | **PASS**: round trips, fiber-to-fiber, ~200 KB stack use, 6.5–6.7 ns per switch | same |
+| These replacements inside ReXGlue on the iPad | **Not tested yet.** The self-test proves the mechanisms on iPadOS, not the patched runtime | — |
 | ReXGlue compiles for iOS with patches 0001–0005 (including the tmp-file memory backing and arm64 fibers) | **Yes**: 925/925 steps, 0 errors | Run 44135637165 |
 | ReXGlue runtime **runs** on the iPad | **Not attempted.** Compiling for iOS does not show that it runs | — |
 | Analysis of an Xbox 360 executable | Not attempted; requires the user's own copy | — |

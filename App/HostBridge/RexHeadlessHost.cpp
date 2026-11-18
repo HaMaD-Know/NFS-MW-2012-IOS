@@ -1,17 +1,32 @@
 // N1-b step B7: starts the real ReXGlue app framework on the iPad with no game, then stops it.
 //
-// The shell's self-test dlopens this library (libnfsmwhost.dylib, built by
+// The shell dlopens this library (libnfsmwhost.dylib, built by
 // .github/workflows/ipad-runtime-app.yml with the same compiler flags as ReXGlue's own app
-// library) and calls nfsmw_rexhost_headless. It runs ReXGlue's normal startup: settings, log file,
-// crash reporter, loading and connecting the eight system modules (filesystem, input, audio, UI,
-// graphics, XAM, XBDM, kernel) from the app's Frameworks folder and initializing them. It asks for
-// no window, no audio, no input and no graphics driver, and loads no game code or data.
+// library) and calls one of two entry points. Neither loads game code or data.
+//
+//  nfsmw_rexhost_headless  Part 1. ReXGlue's normal startup with no window, audio, input or
+//                          graphics driver: settings, log file, crash reporter, and the eight
+//                          system modules loaded, connected and initialized. Any thread.
+//  nfsmw_rexhost_window    Part 2. The same, plus the Vulkan graphics driver (MoltenVK on
+//                          Metal), an SDL3 window and SDL3 controller input, run for a few
+//                          seconds. Must run on the main thread, which UIKit requires for windows.
+//
+// One ReXGlue start per app launch: a second start in the same process is refused.
 #include <rex/app/app.h>
+#include <rex/app_info.h>
 #include <rex/cli.h>
+#include <rex/gpu/graphics_system.h>
+#include <rex/hid/input_system.h>
 #include <rex/result.h>
+#include <rex/ui/ui_system.h>
+
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <exception>
 #include <filesystem>
@@ -47,14 +62,24 @@ const char *PhaseName(rex::app::AppPhase phase) {
   return "unknown";
 }
 
-// A plain rex::app::App (not a TitleApp): it requires no graphics, audio, input or UI.
-class HeadlessHost final : public rex::app::App {
+// A plain rex::app::App (not a TitleApp). Headless it requires nothing; with a window it
+// requires a Xenos graphics driver and a UI window, as a game would, but not audio or input.
+class Host final : public rex::app::App {
  public:
-  HeadlessHost() : App("nfsmw-ipad-host") {}
+  explicit Host(bool window) : App("nfsmw-ipad-host"), window_(window) {}
 
   bool HasUISystem() { return FindUI() != nullptr; }
 
  protected:
+  rex::AppSysRequirements GetRequirements() const override {
+    rex::AppSysRequirements needs;
+    if (window_) {
+      needs.graphics_family = rex::GraphicsFamily::kXenos;
+      needs.ui = true;
+    }
+    return needs;
+  }
+
   void OnModules(std::vector<std::string> &modules) override {
     std::string list;
     for (const std::string &module : modules) {
@@ -72,10 +97,13 @@ class HeadlessHost final : public rex::app::App {
     Say(std::string("  ReXGlue reported: ").append(message));
     App::ReportError(message);
   }
+
+ private:
+  bool window_;
 };
 
 // Copies the end of ReXGlue's own log file into the shell log.
-void ShowRexLog(const std::filesystem::path &folder) {
+void ShowRexLog(const std::filesystem::path &folder, size_t keep) {
   std::error_code error;
   std::filesystem::path newest;
   std::filesystem::file_time_type newest_time{};
@@ -97,7 +125,7 @@ void ShowRexLog(const std::filesystem::path &folder) {
   for (std::string line; std::getline(file, line);) {
     total++;
     tail.push_back(std::move(line));
-    if (tail.size() > 150) tail.pop_front();
+    if (tail.size() > keep) tail.pop_front();
   }
   Say("  ReXGlue log " + newest.filename().string() + ": " + std::to_string(total) +
       " lines, last " + std::to_string(tail.size()) + " follow");
@@ -106,17 +134,105 @@ void ShowRexLog(const std::filesystem::path &folder) {
   }
 }
 
-int Run(const std::filesystem::path &root) {
+// Folder this library was loaded from: the app's Frameworks folder.
+std::filesystem::path OwnFolder() {
+  Dl_info info{};
+  if (dladdr(reinterpret_cast<const void *>(&OwnFolder), &info) && info.dli_fname) {
+    return std::filesystem::path(info.dli_fname).parent_path();
+  }
+  return {};
+}
+
+// SDL on iOS refuses to start unless the program says its main function is ready (normally
+// SDL's own main does this). The shell has its own UIKit main, so tell SDL directly.
+void TellSDLMainIsReady() {
+  const std::filesystem::path sdl = OwnFolder() / "libSDL3d.0.dylib";
+  void *handle = dlopen(sdl.c_str(), RTLD_NOW | RTLD_GLOBAL);
+  if (!handle) {
+    const char *error = dlerror();
+    Say(std::string("  Could not load SDL: ") + (error ? error : "unknown error"));
+    return;
+  }
+  using ReadyFn = void (*)();
+  if (auto ready = reinterpret_cast<ReadyFn>(dlsym(handle, "SDL_SetMainReady"))) {
+    ready();
+    Say("  Told SDL that main is ready");
+  } else {
+    Say("  SDL_SetMainReady not found");
+  }
+}
+
+std::string PadText(const rex::hid::PadState &pad) {
+  char text[160];
+  std::snprintf(text, sizeof text, "buttons %04x, triggers %u/%u, left stick %d,%d, right stick %d,%d",
+                static_cast<unsigned>(pad.buttons), static_cast<unsigned>(pad.left_trigger),
+                static_cast<unsigned>(pad.right_trigger), static_cast<int>(pad.thumb_lx),
+                static_cast<int>(pad.thumb_ly), static_cast<int>(pad.thumb_rx),
+                static_cast<int>(pad.thumb_ry));
+  return text;
+}
+
+// Runs the window for `seconds`, reporting frames and the first controller once a second.
+void RunWindow(Host &app, int seconds) {
+  rex::gpu::IGraphicsSystem &graphics = app.GetGraphics();
+  rex::ui::IUISystem &ui = app.GetUI();
+  rex::hid::IInputSystem &input = app.GetInput();
+  Say(std::string("  Graphics driver: ") + (graphics.HasDriver() ? graphics.GetDriverName() : "none") +
+      "; window: " + (ui.HasWindow() ? "open" : "none") + (ui.IsHeadless() ? " (headless)" : ""));
+  Say("  Running the window for " + std::to_string(seconds) +
+      " seconds. Press buttons on the controller now.");
+
+  using Clock = std::chrono::steady_clock;
+  const auto start = Clock::now();
+  auto next_report = start + std::chrono::seconds(1);
+  std::uint64_t loops = 0;
+  std::uint32_t last_packet = 0;
+  std::string last_pad_error;
+  bool ended = false;
+  while (Clock::now() - start < std::chrono::seconds(seconds)) {
+    if (!app.RunFrame()) {
+      ended = true;
+      break;
+    }
+    loops++;
+    if (Clock::now() >= next_report) {
+      next_report += std::chrono::seconds(1);
+      const auto stats = graphics.GetFrameStats();
+      std::string line = "  t=" +
+                         std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
+                                            Clock::now() - start)
+                                            .count()) +
+                         "s UI loops " + std::to_string(loops) + ", frames " +
+                         std::to_string(stats.frame_count);
+      const auto pad = input.GetState(0);
+      if (pad) {
+        line += "; controller 1: " + PadText(pad->state);
+        if (pad->packet != last_packet) line += " (changed)";
+        last_packet = pad->packet;
+      } else if (pad.error().GetDescription() != last_pad_error) {
+        last_pad_error = pad.error().GetDescription();
+        line += "; controller 1: " + last_pad_error;
+      }
+      Say(line);
+    }
+  }
+  Say(ended ? "  The UI loop ended early (window closed or shutdown requested)"
+            : "  Window time is up");
+}
+
+int Run(const std::filesystem::path &root, bool window, int seconds) {
   std::error_code error;
   std::filesystem::create_directories(root, error);
   Say("  App folder: " + root.string() + (error ? " (could not create: " + error.message() + ")" : ""));
 
-  const std::vector<std::string> args = {
-      "--app.root=" + root.string(),
-      "--ui.driver=none",    // headless: no window yet
-      "--apu.driver=none",   // no audio yet
-      "--hid.drivers=none",  // no controller yet
-  };
+  std::vector<std::string> args = {"--app.root=" + root.string(), "--apu.driver=none"};
+  if (window) {
+    args.push_back("--gpu.driver=vulkan");  // MoltenVK on Metal
+    TellSDLMainIsReady();
+  } else {
+    args.push_back("--ui.driver=none");    // headless: no window
+    args.push_back("--hid.drivers=none");  // no controller
+  }
   std::string shown;
   for (const std::string &arg : args) shown += " " + arg;
   Say("  Settings:" + shown);
@@ -124,7 +240,7 @@ int Run(const std::filesystem::path &root) {
   bool init_ok = false;
   int exit_code = -1;
   {
-    HeadlessHost app;
+    Host app(window);
     Say("  Init: starting");
     const rex::Result<void> init = app.Init(rex::CLIArgList::Parse(args));
     if (!init) {
@@ -135,32 +251,43 @@ int Run(const std::filesystem::path &root) {
       init_ok = true;
       Say(std::string("  Init OK, phase: ") + PhaseName(app.GetPhase()) +
           (app.HasUISystem() ? "" : " (no UI system)"));
+      if (window) RunWindow(app, seconds);
     }
     Say("  Shutdown: starting");
     exit_code = app.Shutdown();
     Say("  Shutdown returned " + std::to_string(exit_code) + ", phase: " + PhaseName(app.GetPhase()));
   }
   Say("  App object destroyed (modules unloaded)");
-  ShowRexLog(root / "logs");
+  ShowRexLog(root / "logs", window ? 200 : 150);
   return init_ok && exit_code == 0;
 }
 
-}  // namespace
-
-extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_headless(const char *root,
-                                                                              LogFn log) {
+int Guarded(const char *root, LogFn log, bool window, int seconds) {
   g_log = log;
   static std::atomic<bool> ran{false};
   if (ran.exchange(true)) {
-    Say("  Already ran once in this launch; close and reopen the app to run it again");
+    Say("  ReXGlue already ran once in this launch; close and reopen the app to run it again");
     return 0;
   }
   try {
-    return Run(root ? std::filesystem::path(root) : std::filesystem::path("."));
+    return Run(root ? std::filesystem::path(root) : std::filesystem::path("."), window, seconds);
   } catch (const std::exception &failure) {
     Say(std::string("  FAIL: C++ exception: ") + failure.what());
   } catch (...) {
     Say("  FAIL: unknown C++ exception");
   }
   return 0;
+}
+
+}  // namespace
+
+extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_headless(const char *root,
+                                                                              LogFn log) {
+  return Guarded(root, log, false, 0);
+}
+
+extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_window(const char *root,
+                                                                            LogFn log,
+                                                                            int seconds) {
+  return Guarded(root, log, true, seconds);
 }

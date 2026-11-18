@@ -1,0 +1,39 @@
+diff --git a/src/ui/sdl3/sdl3_ui_driver.cpp b/src/ui/sdl3/sdl3_ui_driver.cpp
+index 035393b..b95c56f 100644
+--- a/src/ui/sdl3/sdl3_ui_driver.cpp
++++ b/src/ui/sdl3/sdl3_ui_driver.cpp
+@@ -423,7 +423,11 @@ Result<void> SDL3UIDriver::Initialize(IDriverContext& context) {
+   REX_TRY_VOID(context.GetSettingsRegistry().Register(*this));
+   SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+   std::string driver = video_driver.Get();
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_IOS
++  if (driver.empty()) {
++    driver = "uikit";
++  }
++#elif REX_PLATFORM_MAC
+   if (driver.empty()) {
+     driver = "cocoa";
+   }
+@@ -714,6 +718,21 @@ Result<NativeWindow> SDL3UIDriver::GetNativeWindow() const {
+ #endif
+     return result;
+   }
++#if REX_PLATFORM_IOS
++  // iOS: a UIWindow. The graphics drivers use only the CAMetalLayer, as with an NSWindow.
++  if (void* ui = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr)) {
++    result.type = NativeWindow::Type::kCocoa;
++    result.window = ui;
++    State& mutable_state = *state_;
++    if (!mutable_state.metal_view) {
++      mutable_state.metal_view = SDL_Metal_CreateView(s.window);
++    }
++    result.layer = mutable_state.metal_view
++                       ? SDL_Metal_GetLayer(static_cast<SDL_MetalView>(mutable_state.metal_view))
++                       : nullptr;
++    return result;
++  }
++#endif
+   if (void* surface =
+           SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr)) {
+     result.type = NativeWindow::Type::kWayland;

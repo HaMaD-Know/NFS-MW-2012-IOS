@@ -26,7 +26,7 @@ final class RuntimeSelfTest: ObservableObject {
         summary = ""
 
         DispatchQueue.global(qos: .userInitiated).async {
-            RuntimeSelfTest.emit(String(format: "Self-test v7 start. Device %@, app memory available %.2f GB",
+            RuntimeSelfTest.emit(String(format: "Self-test v8 start. Device %@, app memory available %.2f GB",
                                         DeviceInfo.machine, DeviceInfo.availableMemoryGB))
             selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
             selftest_set_documents_dir(
@@ -62,6 +62,33 @@ final class RuntimeSelfTest: ObservableObject {
                 RuntimeSelfTest.shared.summary = results.joined(separator: " · ")
                 RuntimeSelfTest.shared.running = false
             }
+        }
+    }
+
+    /// Step B7 part 2: ReXGlue with Vulkan graphics, its own SDL3 window and the controller,
+    /// for 15 seconds, then shut down. UIKit allows windows only on the main thread, so this
+    /// runs there; the shell's screen is covered and frozen until it ends. ReXGlue can start
+    /// once per launch, so this needs a fresh launch without the self-test before it.
+    func runWindowTest() {
+        guard !running else { return }
+        running = true
+        lines = []
+        summary = ""
+        RuntimeSelfTest.emit(String(format: "ReXGlue window test start. Device %@, app memory available %.2f GB",
+                                    DeviceInfo.machine, DeviceInfo.availableMemoryGB))
+        selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
+        selftest_set_documents_dir(
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "")
+        setenv("MVK_CONFIG_LOG_LEVEL", "2", 1)  // MoltenVK: errors and warnings
+        crashlog_redirect_stderr()
+        // Let the button's tap finish first, then take over the main thread.
+        DispatchQueue.main.async {
+            let passed = selftest_rexglue_window(selfTestLogSink, 15) != 0
+            let line = String(format: "ReXGlue window test end: %@. App memory available %.2f GB",
+                              passed ? "PASS" : "FAIL", DeviceInfo.availableMemoryGB)
+            RuntimeSelfTest.emit(line)
+            RuntimeSelfTest.shared.summary = "ReXGlue window test \(passed ? "PASS" : "FAIL")"
+            RuntimeSelfTest.shared.running = false
         }
     }
 

@@ -42,6 +42,11 @@ struct ContentView: View {
                 }
                 .disabled(selfTest.running)
                 .buttonStyle(.borderedProminent)
+                Button("Run ReXGlue window test (15 s, fresh launch)") {
+                    selfTest.runWindowTest()
+                }
+                .disabled(selfTest.running)
+                .buttonStyle(.bordered)
                 if !selfTest.summary.isEmpty {
                     Text(selfTest.summary)
                 }

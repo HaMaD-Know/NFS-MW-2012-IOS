@@ -63,6 +63,12 @@ void selftest_set_documents_dir(const char *path);
  */
 int selftest_rexglue_headless(selftest_log_fn log);
 
+/**
+ * Step B7 part 2: starts ReXGlue with the Vulkan graphics driver, an SDL3 window and SDL3
+ * controller input, runs the window for `seconds`, then stops. Must run on the main thread.
+ */
+int selftest_rexglue_window(selftest_log_fn log, int seconds);
+
 // --- Diagnostics (CrashLog.c) ---
 
 /** Records signal, address and call stack of a crash into the log file at log_path. */

@@ -25,6 +25,7 @@ back to flash under pressure, a stutter and wear risk for a game. Patch 0004 cur
 and should move to B. None of this has yet run *inside* ReXGlue on the device (B7).
 
 | 2026-11-18 | **Packaging and Vulkan on the device** | Shells 0.0.3–0.0.6 inside LiveContainer. All 16 ReXGlue libraries load. `vkCreateInstance` crashed in 0.0.3–0.0.5: MoltenVK freed a libc++ block through ReXGlue's operator delete (the app is not the main executable inside LiveContainer, so the forwarders do not cover libc++). Patch 0007 makes the host allocator pass through to malloc/free on iOS. **0.0.6: no crash; Vulkan instance created, Apple M2 GPU, Vulkan 1.2, 5,461 MB GPU memory.** B4 (MoltenVK) and B5 (packaging) done on the device | Device logs |
+| 2026-11-18 | **B7 part 1: ReXGlue runtime starts headless on the device** | Shell 0.0.7 inside LiveContainer. `App/HostBridge/RexHeadlessHost.cpp` (a plain `rex::app::App`, built with ReXGlue's own app flags into `libnfsmwhost.dylib`) ran `App::Init` with `ui.driver`, `apu.driver` and `hid.drivers` set to `none`: all eight system modules loaded from Frameworks, connected and initialized (`OnInit` reached, phase running), `Shutdown` returned 0. Remaining for B7: the Vulkan graphics driver, an SDL3 window and controller input | Device log |
 
 ### Device findings and their consequences (2026-11-17)
 

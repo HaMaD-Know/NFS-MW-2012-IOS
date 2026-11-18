@@ -25,6 +25,7 @@ Last updated: 2026-11-17.
 | iPad app with the ReXGlue runtime embedded (14 ReXGlue libraries, SDL3, MoltenVK as `libMoltenVK.dylib`, patches 0001–0006) builds in CI | **Yes**: all libraries arm64 + iOS, every `@rpath` dependency present, app 57 MB | Run 44289701605 |
 | Those libraries load on the iPad | **Yes**: 16 of 16 ReXGlue libraries load inside the app, 14 runtime modules answer (shells 0.0.3–0.0.6) | Device logs 2026-11-18 |
 | Vulkan via MoltenVK on the iPad | **PASS (shell 0.0.6, two runs, no crash)**: MoltenVK 1.4.2, `vkCreateInstance` succeeds, device "Apple M2 GPU", Vulkan 1.2, Metal 4 / Apple GPU family 8, 5,461 MB GPU memory available. Fixed by patch 0007 (host allocator passes through to malloc/free on iOS) | Device log 2026-11-18 |
+| ReXGlue runtime starts on the iPad, no game (step B7, part 1) | **PASS (shell 0.0.7)**: ReXGlue's own startup ran headless (no window, audio, input or graphics driver): settings, log file, crash reporter, all eight system modules (filesystem, input, audio, UI, graphics, XAM, XBDM, kernel) loaded from the app, connected and initialized; then a clean shutdown (exit code 0). A second run in the same launch is refused by design | Device log 2026-11-18 |
 | ReXGlue runtime **runs** on the iPad | **Not attempted.** Compiling for iOS does not show that it runs | — |
 | Analysis of an Xbox 360 executable | Not attempted; requires the user's own copy | — |
 | Bring Your Own Game: import, verification, re-selection | **Designed, not implemented** (`BYOG_DESIGN.md`) | — |

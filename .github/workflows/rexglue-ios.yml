@@ -153,6 +153,43 @@ jobs:
             done
           } 2>&1 | tee "$RUNNER_TEMP/logs/binaries.log"
 
+      # Facts needed to package the runtime into the iPad app: which libraries were built, what
+      # each depends on (install names, @rpath), where SDL3 is, and which MoltenVK files the
+      # Vulkan SDK ships for iOS. Published as annotations.
+      - name: Packaging inventory
+        if: always()
+        continue-on-error: true
+        run: |
+          set +e +o pipefail
+          inv="$RUNNER_TEMP/logs/inventory.log"
+          {
+            echo "## Runtime libraries (out/ios-arm64)"
+            for f in rexglue-sdk/out/ios-arm64/*.dylib; do
+              [ -f "$f" ] || continue
+              echo "$(basename "$f") $(stat -f %z "$f") bytes"
+              otool -D "$f" | tail -n +2 | sed 's/^/  id: /'
+              otool -L "$f" | tail -n +2 | grep -v '/usr/lib/\|/System/' | sed 's/^/  dep:/'
+            done
+            echo "## Other dylibs in the build tree"
+            find build-ios rexglue-sdk/out -name '*.dylib' -not -path '*/ios-arm64/lib*' 2>/dev/null | head -40
+            echo "## SDL3"
+            find build-ios rexglue-sdk/out -iname '*SDL3*' \( -name '*.dylib' -o -name '*.a' -o -name '*.framework' \) 2>/dev/null | head
+            echo "## MoltenVK / Vulkan files for iOS in the Vulkan SDK"
+            root="$(dirname "${VULKAN_SDK:-/x}")"
+            find "$root" -maxdepth 6 \( -iname '*moltenvk*' -o -iname 'vulkan.framework' -o -iname 'libvulkan*' \) 2>/dev/null | grep -i 'ios' | head -40
+            for x in $(find "$root" -maxdepth 7 -path '*ios*' \( -name '*.dylib' -o -name 'MoltenVK' \) -type f 2>/dev/null | head -10); do
+              echo "-- $x"; lipo -info "$x" 2>&1; xcrun vtool -show-build "$x" 2>/dev/null | grep -m2 -E 'platform|minos'; otool -D "$x" | tail -n +2
+            done
+          } > "$inv" 2>&1
+          cat "$inv"
+          python3 - "$inv" <<'PY'
+          import sys
+          body = open(sys.argv[1]).read().replace('%', '%25').replace('\r', '')
+          for i in range(0, min(len(body), 4 * 20000), 20000):
+              part = body[i:i + 20000].replace('\n', '%0A')
+              print(f"::notice title=Packaging inventory part {i // 20000 + 1}::{part}")
+          PY
+
       # Turns the logs into a compact census of distinct errors, published as annotations
       # (readable without signing in) and as the job summary.
       - name: Error census

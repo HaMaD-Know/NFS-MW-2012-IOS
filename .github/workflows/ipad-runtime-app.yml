@@ -116,14 +116,25 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Build the shell (arm64, unsigned)
+      # Build the shell as a ReXGlue host: ReXGlue's operator new/delete forwarders in the app
+      # binary, and librexbased linked at launch (see App/project-runtime.yml for why).
+      - name: Build the shell as a ReXGlue host (arm64, unsigned)
         working-directory: project/App
         run: |
           set -o pipefail
-          xcodegen generate
+          mkdir -p RuntimeHost
+          cp ../../rexglue-sdk/cmake/rexglue_host_alloc_stub.cpp RuntimeHost/RexHostAllocStub.cpp
+          xcodegen generate --spec project-runtime.yml
           xcodebuild -project NFSMWShell.xcodeproj -target NFSMWShell -configuration Release \
             -sdk iphoneos SYMROOT="$PWD/build" \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -15
+            REXGLUE_INCLUDE="$GITHUB_WORKSPACE/rexglue-sdk/include" \
+            REXGLUE_LIBDIR="$GITHUB_WORKSPACE/rexglue-sdk/out/ios-arm64" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -25
+          bin="build/Release-iphoneos/NFSMWShell.app/NFSMWShell"
+          echo "--- app links:"; otool -L "$bin" | grep -E 'rex|libc\+\+'
+          echo "--- operator new/delete defined in the app binary:"
+          nm -gU "$bin" | grep -E ' __Znwm$| __ZdlPv$' || { echo "::error::forwarders missing from the app binary"; exit 1; }
+          otool -L "$bin" | grep -q 'librexbased' || { echo "::error::app does not link librexbased"; exit 1; }
 
       - name: Embed runtime libraries in the app
         run: |

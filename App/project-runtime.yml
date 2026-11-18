@@ -1,0 +1,24 @@
+# XcodeGen spec for the shell *as a ReXGlue host* (used by .github/workflows/ipad-runtime-app.yml).
+#
+# ReXGlue replaces C++ operator new/delete with its host allocator in every binary it builds,
+# executables included, so that memory can cross library boundaries. A host that lacks the
+# forwarders mixes two allocators in one process: on the iPad (shell 0.0.4, 2026-11-18) MoltenVK
+# freed a libc++-allocated block through ReXGlue's operator delete and the allocator aborted
+# ("pointer was not made by the host allocator"). This spec adds ReXGlue's own forwarder file
+# (copied from the pinned ReXGlue checkout into RuntimeHost/ by the workflow) and links the app
+# against librexbased at launch, as ReXGlue's own hosts do.
+include:
+  - project.yml
+
+targets:
+  NFSMWShell:
+    sources:
+      - path: Sources
+      - path: RuntimeHost
+    settings:
+      base:
+        HEADER_SEARCH_PATHS: ["$(REXGLUE_INCLUDE)"]
+        LIBRARY_SEARCH_PATHS: ["$(REXGLUE_LIBDIR)"]
+        OTHER_LDFLAGS: ["$(inherited)", "-lrexbased"]
+        OTHER_CPLUSPLUSFLAGS: ["$(inherited)", "-std=c++23"]
+        GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "NFSMW_REXGLUE_HOST=1"]

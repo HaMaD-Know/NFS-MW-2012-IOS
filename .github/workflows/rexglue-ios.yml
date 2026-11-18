@@ -185,9 +185,13 @@ jobs:
           python3 - "$inv" <<'PY'
           import sys
           body = open(sys.argv[1]).read().replace('%', '%25').replace('\r', '')
-          for i in range(0, min(len(body), 4 * 20000), 20000):
-              part = body[i:i + 20000].replace('\n', '%0A')
-              print(f"::notice title=Packaging inventory part {i // 20000 + 1}::{part}")
+          # GitHub keeps only about 4 KB of each annotation; publish the non-library sections first.
+          start = body.find('## Other dylibs')
+          body = body[start:] + '\n' + body[:start] if start > 0 else body
+          size = 3500
+          for i in range(0, min(len(body), 10 * size), size):
+              part = body[i:i + size].replace('\n', '%0A')
+              print(f"::notice title=Packaging inventory part {i // size + 1}::{part}")
           PY
 
       # Turns the logs into a compact census of distinct errors, published as annotations

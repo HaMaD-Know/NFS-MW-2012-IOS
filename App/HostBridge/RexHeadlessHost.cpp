@@ -52,11 +52,13 @@ class HeadlessHost final : public rex::app::App {
  public:
   HeadlessHost() : App("nfsmw-ipad-host") {}
 
+  bool HasUISystem() { return FindUI() != nullptr; }
+
  protected:
   void OnModules(std::vector<std::string> &modules) override {
     std::string list;
-    for (const std::string &name : modules) {
-      list += list.empty() ? name : ", " + name;
+    for (const std::string &module : modules) {
+      list += list.empty() ? module : ", " + module;
     }
     Say("  System modules to load: " + list);
   }
@@ -132,7 +134,7 @@ int Run(const std::filesystem::path &root) {
     } else {
       init_ok = true;
       Say(std::string("  Init OK, phase: ") + PhaseName(app.GetPhase()) +
-          (app.FindUI() ? "" : " (no UI system)"));
+          (app.HasUISystem() ? "" : " (no UI system)"));
     }
     Say("  Shutdown: starting");
     exit_code = app.Shutdown();

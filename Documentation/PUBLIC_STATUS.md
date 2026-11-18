@@ -22,6 +22,8 @@ Last updated: 2026-11-17.
 | arm64 fiber switch on the iPad (replacement for ucontext) | **PASS**: round trips, fiber-to-fiber, ~200 KB stack use, 6.5–6.7 ns per switch | same |
 | These replacements inside ReXGlue on the iPad | **Not tested yet.** The self-test proves the mechanisms on iPadOS, not the patched runtime | — |
 | ReXGlue compiles for iOS with patches 0001–0005 (guest memory via a **Mach memory entry**, arm64 fibers) | **Yes**: 0 errors (earlier tmp-file variant: run 44135637165) | Run 44284348684 |
+| iPad app with the ReXGlue runtime embedded (14 ReXGlue libraries, SDL3, MoltenVK as `libMoltenVK.dylib`, patches 0001–0006) builds in CI | **Yes**: all libraries arm64 + iOS, every `@rpath` dependency present, app 57 MB | Run 44289701605 |
+| Those libraries load on the iPad; MoltenVK creates a Vulkan device | **Not tested yet** (shell 0.0.3, self-test v3) | — |
 | ReXGlue runtime **runs** on the iPad | **Not attempted.** Compiling for iOS does not show that it runs | — |
 | Analysis of an Xbox 360 executable | Not attempted; requires the user's own copy | — |
 | Bring Your Own Game: import, verification, re-selection | **Designed, not implemented** (`BYOG_DESIGN.md`) | — |

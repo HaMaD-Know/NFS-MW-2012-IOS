@@ -1,5 +1,5 @@
 diff --git a/src/base/memory_posix.cpp b/src/base/memory_posix.cpp
-index 3d214a1..e525b63 100644
+index 3d214a1..c5ac24e 100644
 --- a/src/base/memory_posix.cpp
 +++ b/src/base/memory_posix.cpp
 @@ -46,6 +46,10 @@
@@ -13,6 +13,15 @@ index 3d214a1..e525b63 100644
  #if REX_PLATFORM_LINUX
  #include "base/proc_map.h"
  #endif
+@@ -66,7 +70,7 @@ namespace rex {
+ namespace memory {
+ 
+ /** Builds a shm_open name from a path, hashing long names on macOS (31 character limit). */
+-static std::string BuildSHMName(const std::filesystem::path& path) {
++[[maybe_unused]] static std::string BuildSHMName(const std::filesystem::path& path) {
+   std::string name = path.string();
+   for (char& c : name) {
+     if (c == '/') {
 @@ -367,6 +371,45 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
  #endif
  }

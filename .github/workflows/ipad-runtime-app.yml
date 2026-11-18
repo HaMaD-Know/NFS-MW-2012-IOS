@@ -90,17 +90,33 @@ jobs:
       # Compiled with the flags of ReXGlue's own app library, linked against its libraries.
       - name: Build the ReXGlue host bridge (libnfsmwhost.dylib)
         run: |
-          set -e
-          python3 project/Tools/build_host_bridge.py build-ios \
-            project/App/HostBridge/RexHeadlessHost.cpp "$RUNNER_TEMP/RexHeadlessHost.o"
-          lib=rexglue-sdk/out/ios-arm64
-          xcrun -sdk iphoneos clang++ -dynamiclib -arch arm64 \
-            -miphoneos-version-min="$IOS_DEPLOYMENT_TARGET" \
-            "$RUNNER_TEMP/RexHeadlessHost.o" -L"$lib" -lrexappd -lrexkerneld -lrexbased \
-            -install_name @rpath/libnfsmwhost.dylib -Wl,-rpath,@loader_path \
-            -o "$RUNNER_TEMP/libnfsmwhost.dylib"
-          nm -gU "$RUNNER_TEMP/libnfsmwhost.dylib" | grep -E ' _nfsmw_rexhost_headless$'
-          otool -L "$RUNNER_TEMP/libnfsmwhost.dylib"
+          out="$RUNNER_TEMP/bridge.txt"; lib=rexglue-sdk/out/ios-arm64
+          build() {
+            set -e
+            echo "libraries: $(cd "$lib" && ls *.dylib | tr '\n' ' ')"
+            python3 project/Tools/build_host_bridge.py build-ios \
+              project/App/HostBridge/RexHeadlessHost.cpp "$RUNNER_TEMP/RexHeadlessHost.o"
+            xcrun -sdk iphoneos clang++ -dynamiclib -arch arm64 \
+              -miphoneos-version-min="$IOS_DEPLOYMENT_TARGET" \
+              "$RUNNER_TEMP/RexHeadlessHost.o" -L"$lib" -lrexappd -lrexkerneld -lrexbased \
+              -install_name @rpath/libnfsmwhost.dylib -Wl,-rpath,@loader_path \
+              -o "$RUNNER_TEMP/libnfsmwhost.dylib"
+            nm -gU "$RUNNER_TEMP/libnfsmwhost.dylib" | grep -E ' _nfsmw_rexhost_headless$'
+            otool -L "$RUNNER_TEMP/libnfsmwhost.dylib"
+          }
+          ( build ) > "$out" 2>&1; status=$?
+          cat "$out"
+          if [ $status -ne 0 ]; then
+            # Logs need a sign-in; annotations do not. Report the errors in 3.5 KB parts.
+            { grep -E 'libraries:|error|undefined|Undefined|ld:|note:' "$out" || tail -40 "$out"; } \
+              | head -60 > "$RUNNER_TEMP/bridge-errors.txt"
+            split -b 3500 "$RUNNER_TEMP/bridge-errors.txt" "$RUNNER_TEMP/bridge-part-"
+            n=0; for part in "$RUNNER_TEMP"/bridge-part-*; do n=$((n+1))
+              body=$(sed -e 's/%/%25/g' "$part" | awk 'BEGIN{ORS="%0A"} {print}')
+              echo "::error title=Host bridge build part $n::${body}"
+            done
+            exit 1
+          fi
 
       # The Vulkan SDK ships MoltenVK for iOS only as a static library; ReXGlue loads the Vulkan
       # runtime at run time, so link it into a dynamic library.

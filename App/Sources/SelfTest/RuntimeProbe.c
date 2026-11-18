@@ -201,3 +201,37 @@ int selftest_moltenvk(selftest_log_fn log) {
       device_count == 1 ? "" : "s");
   return ok;
 }
+
+// --- Step B7: start the ReXGlue runtime with no game -----------------------------------------
+
+static char g_documents[1024];
+
+void selftest_set_documents_dir(const char *path) {
+  snprintf(g_documents, sizeof g_documents, "%s", path ? path : "");
+}
+
+int selftest_rexglue_headless(selftest_log_fn log) {
+  if (!g_frameworks[0] || !g_documents[0]) {
+    say(log, "FAIL: Frameworks or Documents folder not set");
+    return 0;
+  }
+  char path[1200];
+  snprintf(path, sizeof path, "%s/libnfsmwhost.dylib", g_frameworks);
+  void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+  if (!handle) {
+    const char *error = dlerror();
+    say(log, "FAIL: cannot load libnfsmwhost.dylib: %.400s", error ? error : "unknown error");
+    return 0;
+  }
+  typedef int (*HostFn)(const char *root, selftest_log_fn log);
+  HostFn start = (HostFn)dlsym(handle, "nfsmw_rexhost_headless");
+  if (!start) {
+    say(log, "FAIL: nfsmw_rexhost_headless not found in libnfsmwhost.dylib");
+    return 0;
+  }
+  char root[1200];
+  snprintf(root, sizeof root, "%s/rexglue", g_documents);
+  const int ok = start(root, log);
+  say(log, "%s: ReXGlue runtime started and stopped with no game", ok ? "PASS" : "FAIL");
+  return ok;
+}

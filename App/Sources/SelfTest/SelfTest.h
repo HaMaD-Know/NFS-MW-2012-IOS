@@ -54,6 +54,15 @@ int selftest_runtime_libraries(selftest_log_fn log);
 /** Loads MoltenVK, creates a Vulkan instance and lists the physical devices. */
 int selftest_moltenvk(selftest_log_fn log);
 
+/** Sets the app's Documents folder; the ReXGlue runtime keeps its files and log there. */
+void selftest_set_documents_dir(const char *path);
+
+/**
+ * Starts the real ReXGlue app framework with no game, no window and no drivers, then stops it
+ * (step B7). Calls libnfsmwhost.dylib from Frameworks, built only for the runtime IPA.
+ */
+int selftest_rexglue_headless(selftest_log_fn log);
+
 // --- Diagnostics (CrashLog.c) ---
 
 /** Records signal, address and call stack of a crash into the log file at log_path. */

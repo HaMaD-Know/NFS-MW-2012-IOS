@@ -26,9 +26,11 @@ final class RuntimeSelfTest: ObservableObject {
         summary = ""
 
         DispatchQueue.global(qos: .userInitiated).async {
-            RuntimeSelfTest.emit(String(format: "Self-test v6 start. Device %@, app memory available %.2f GB",
+            RuntimeSelfTest.emit(String(format: "Self-test v7 start. Device %@, app memory available %.2f GB",
                                         DeviceInfo.machine, DeviceInfo.availableMemoryGB))
             selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
+            selftest_set_documents_dir(
+                FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "")
             setenv("MVK_CONFIG_LOG_LEVEL", "3", 1)  // MoltenVK: errors, warnings and info
             crashlog_redirect_stderr()
             // Version 3: packaging probe first (ReXGlue libraries and MoltenVK inside the app),
@@ -44,6 +46,8 @@ final class RuntimeSelfTest: ObservableObject {
                 ("Original ucontext fibers (failed before)", selftest_fibers),
                 // Last, because it crashed in vkCreateInstance on 2026-11-18 (shell 0.0.3).
                 ("Vulkan via MoltenVK", selftest_moltenvk),
+                // Version 7 (step B7): the real ReXGlue runtime, started and stopped with no game.
+                ("ReXGlue runtime start (no game)", selftest_rexglue_headless),
             ]
             var results: [String] = []
             for (name, test) in tests {

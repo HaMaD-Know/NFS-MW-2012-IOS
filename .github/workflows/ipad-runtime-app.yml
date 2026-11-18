@@ -10,6 +10,7 @@ on:
     paths:
       - "App/**"
       - "patches/rexglue-ios/**"
+      - "Tools/build_host_bridge.py"
       - ".github/workflows/ipad-runtime-app.yml"
 
 permissions:
@@ -80,8 +81,26 @@ jobs:
             -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
             -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
             -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_ENABLE_TRACY=OFF -DREXGLUE_VMA_INCLUDE_DIR="$VMA_INC" \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             2>&1 | tail -20
           cmake --build build-ios --parallel 2>&1 | tail -20
+          echo "--- libraries built:"; ls rexglue-sdk/out/ios-arm64/
+
+      # Step B7: the bridge that starts ReXGlue's app framework with no game (App/HostBridge).
+      # Compiled with the flags of ReXGlue's own app library, linked against its libraries.
+      - name: Build the ReXGlue host bridge (libnfsmwhost.dylib)
+        run: |
+          set -e
+          python3 project/Tools/build_host_bridge.py build-ios \
+            project/App/HostBridge/RexHeadlessHost.cpp "$RUNNER_TEMP/RexHeadlessHost.o"
+          lib=rexglue-sdk/out/ios-arm64
+          xcrun -sdk iphoneos clang++ -dynamiclib -arch arm64 \
+            -miphoneos-version-min="$IOS_DEPLOYMENT_TARGET" \
+            "$RUNNER_TEMP/RexHeadlessHost.o" -L"$lib" -lrexappd -lrexkerneld -lrexbased \
+            -install_name @rpath/libnfsmwhost.dylib -Wl,-rpath,@loader_path \
+            -o "$RUNNER_TEMP/libnfsmwhost.dylib"
+          nm -gU "$RUNNER_TEMP/libnfsmwhost.dylib" | grep -E ' _nfsmw_rexhost_headless$'
+          otool -L "$RUNNER_TEMP/libnfsmwhost.dylib"
 
       # The Vulkan SDK ships MoltenVK for iOS only as a static library; ReXGlue loads the Vulkan
       # runtime at run time, so link it into a dynamic library.
@@ -146,6 +165,7 @@ jobs:
           cp rexglue-sdk/out/ios-arm64/librex*.dylib "$fw/"
           cp rexglue-sdk/out/ios-arm64/libSDL3d.0.dylib "$fw/"
           cp "$RUNNER_TEMP/libMoltenVK.dylib" "$fw/"
+          cp "$RUNNER_TEMP/libnfsmwhost.dylib" "$fw/"
           # Let each library find its neighbours, then re-sign ad hoc (the sideloading tool
           # re-signs everything with the user's Apple ID at install time).
           for f in "$fw"/*.dylib; do

@@ -131,8 +131,11 @@ jobs:
             REXGLUE_LIBDIR="$GITHUB_WORKSPACE/rexglue-sdk/out/ios-arm64" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -25
           bin="build/Release-iphoneos/NFSMWShell.app/NFSMWShell"
+          echo "--- forwarder object compiled:"; find build -name 'RexHostAllocStub*.o' | head -3
+          echo "--- operator new/delete symbols in the app binary (any visibility):"
+          nm -m "$bin" | grep -E '__Znwm|__ZdlPv' || echo "(none)"
           echo "--- app links:"; otool -L "$bin" | grep -E 'rex|libc\+\+'
-          echo "--- operator new/delete defined in the app binary:"
+          echo "--- operator new/delete exported by the app binary:"
           nm -gU "$bin" | grep -E ' __Znwm$| __ZdlPv$' || { echo "::error::forwarders missing from the app binary"; exit 1; }
           otool -L "$bin" | grep -q 'librexbased' || { echo "::error::app does not link librexbased"; exit 1; }
 

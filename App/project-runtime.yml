@@ -19,6 +19,10 @@ targets:
       base:
         HEADER_SEARCH_PATHS: ["$(REXGLUE_INCLUDE)"]
         LIBRARY_SEARCH_PATHS: ["$(REXGLUE_LIBDIR)"]
-        OTHER_LDFLAGS: ["$(inherited)", "-lrexbased"]
+        # Nothing in the app calls operator new/delete directly, so the release link dropped the
+        # forwarders (CI run 44296718644). Keep them and export them, so that dyld uses them for
+        # the whole process as ReXGlue's hosts require.
+        OTHER_LDFLAGS: ["$(inherited)", "-lrexbased", "-Wl,-export_dynamic"]
+        DEAD_CODE_STRIPPING: NO
         OTHER_CPLUSPLUSFLAGS: ["$(inherited)", "-std=c++23"]
         GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "NFSMW_REXGLUE_HOST=1"]

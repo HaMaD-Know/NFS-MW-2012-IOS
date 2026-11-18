@@ -21,7 +21,7 @@ Last updated: 2026-11-17.
 | Memory-fault handling on the iPad | **PASS** (write and read faults caught, page unprotected, access resumed) | same |
 | arm64 fiber switch on the iPad (replacement for ucontext) | **PASS**: round trips, fiber-to-fiber, ~200 KB stack use, 6.5–6.7 ns per switch | same |
 | These replacements inside ReXGlue on the iPad | **Not tested yet.** The self-test proves the mechanisms on iPadOS, not the patched runtime | — |
-| ReXGlue compiles for iOS with patches 0001–0005 (including the tmp-file memory backing and arm64 fibers) | **Yes**: 925/925 steps, 0 errors | Run 44135637165 |
+| ReXGlue compiles for iOS with patches 0001–0005 (guest memory via a **Mach memory entry**, arm64 fibers) | **Yes**: 0 errors (earlier tmp-file variant: run 44135637165) | Run 44284348684 |
 | ReXGlue runtime **runs** on the iPad | **Not attempted.** Compiling for iOS does not show that it runs | — |
 | Analysis of an Xbox 360 executable | Not attempted; requires the user's own copy | — |
 | Bring Your Own Game: import, verification, re-selection | **Designed, not implemented** (`BYOG_DESIGN.md`) | — |

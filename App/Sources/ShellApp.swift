@@ -12,6 +12,12 @@ struct ShellApp: App {
     @StateObject private var stats = RenderStats()
 
     init() {
+        if let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            crashlog_install(documents.appendingPathComponent("shell-log.txt").path)
+        }
+        NSSetUncaughtExceptionHandler { exception in
+            ShellLog.shared.writeSync("CRASH: Objective-C exception \(exception.name.rawValue): \(exception.reason ?? "")")
+        }
         let info = ProcessInfo.processInfo
         ShellLog.shared.write("Launch: iPadOS \(UIDevice.current.systemVersion), model \(DeviceInfo.machine)")
         ShellLog.shared.write(String(format: "Device RAM %.2f GB, app memory available at launch %.2f GB",

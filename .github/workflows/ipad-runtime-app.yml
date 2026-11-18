@@ -99,6 +99,20 @@ jobs:
           nm -gU "$RUNNER_TEMP/libMoltenVK.dylib" | grep -E ' _vkGetInstanceProcAddr$'
           ls -l "$RUNNER_TEMP/libMoltenVK.dylib"
 
+      # The shell's Vulkan probe crashed in vkCreateInstance on the iPad (2026-11-18, shell 0.0.3).
+      # Run the same probe code here against the macOS MoltenVK to tell a probe bug from an iOS
+      # library problem. Diagnostic only; it does not gate the build.
+      - name: Vulkan probe on the macOS runner (diagnostic)
+        continue-on-error: true
+        run: |
+          lib=$(find "$VULKAN_SDK" -name libMoltenVK.dylib -not -path '*xcframework*' | head -1)
+          echo "macOS MoltenVK: $lib"
+          clang -std=gnu17 -Wall -o mvk_host project/App/Tests/moltenvk_host.c \
+            project/App/Sources/SelfTest/RuntimeProbe.c
+          ./mvk_host "$(dirname "$lib")"
+          echo "--- iOS libMoltenVK.dylib dependencies:"
+          otool -L "$RUNNER_TEMP/libMoltenVK.dylib"
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

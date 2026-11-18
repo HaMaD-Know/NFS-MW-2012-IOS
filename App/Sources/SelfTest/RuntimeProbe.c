@@ -152,6 +152,7 @@ int selftest_moltenvk(selftest_log_fn log) {
   if (enumerate_ext) enumerate_ext(NULL, &extension_count, NULL);
   say(log, "  Instance extensions available: %u", extension_count);
 
+  say(log, "  Looking up vkCreateInstance");
   CreateInstanceFn create = (CreateInstanceFn)gipa(NULL, "vkCreateInstance");
   if (!create) {
     say(log, "FAIL: vkCreateInstance not found");
@@ -160,7 +161,9 @@ int selftest_moltenvk(selftest_log_fn log) {
   VkAppInfo app = {0, NULL, "NFSMWShell probe", 1, "none", 1, (1u << 22) | (2u << 12)};  // 1.2
   VkInstanceInfo info = {1, NULL, 0, &app, 0, NULL, 0, NULL};
   void *instance = NULL;
+  say(log, "  Calling vkCreateInstance (Vulkan 1.2, no layers, no extensions)");
   int32_t result = create(&info, NULL, &instance);
+  say(log, "  vkCreateInstance returned %d", result);
   if (result != 0 || !instance) {
     say(log, "FAIL: vkCreateInstance returned %d", result);
     return 0;
@@ -173,6 +176,7 @@ int selftest_moltenvk(selftest_log_fn log) {
   uint32_t device_count = 0;
   void *devices[4] = {0};
   if (enumerate) {
+    say(log, "  Enumerating physical devices");
     enumerate(instance, &device_count, NULL);
     if (device_count > 4) device_count = 4;
     enumerate(instance, &device_count, devices);

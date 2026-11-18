@@ -54,6 +54,14 @@ int selftest_runtime_libraries(selftest_log_fn log);
 /** Loads MoltenVK, creates a Vulkan instance and lists the physical devices. */
 int selftest_moltenvk(selftest_log_fn log);
 
+// --- Diagnostics (CrashLog.c) ---
+
+/** Records signal, address and call stack of a crash into the log file at log_path. */
+void crashlog_install(const char *log_path);
+
+/** Sends stderr (e.g. MoltenVK's own messages) into the same log file. */
+void crashlog_redirect_stderr(void);
+
 #ifdef __cplusplus
 }
 #endif

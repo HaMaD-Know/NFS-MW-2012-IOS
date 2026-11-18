@@ -26,14 +26,15 @@ final class RuntimeSelfTest: ObservableObject {
         summary = ""
 
         DispatchQueue.global(qos: .userInitiated).async {
-            RuntimeSelfTest.emit(String(format: "Self-test v3 start. Device %@, app memory available %.2f GB",
+            RuntimeSelfTest.emit(String(format: "Self-test v4 start. Device %@, app memory available %.2f GB",
                                         DeviceInfo.machine, DeviceInfo.availableMemoryGB))
             selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
+            setenv("MVK_CONFIG_LOG_LEVEL", "3", 1)  // MoltenVK: errors, warnings and info
+            crashlog_redirect_stderr()
             // Version 3: packaging probe first (ReXGlue libraries and MoltenVK inside the app),
             // then the version 2 mechanism tests. The two "original" tests show the before/after.
             let tests: [(String, (selftest_log_fn?) -> Int32)] = [
                 ("ReXGlue libraries in the app", selftest_runtime_libraries),
-                ("Vulkan via MoltenVK", selftest_moltenvk),
                 ("Address space", selftest_address_space),
                 ("Memory A: temporary file", selftest_backing_file),
                 ("Memory B: Mach memory entry", selftest_backing_mach_entry),
@@ -41,6 +42,8 @@ final class RuntimeSelfTest: ObservableObject {
                 ("Fibers: new arm64 switch", selftest_fibers_arm64),
                 ("Original shm_open method (failed before)", selftest_guest_memory),
                 ("Original ucontext fibers (failed before)", selftest_fibers),
+                // Last, because it crashed in vkCreateInstance on 2026-11-18 (shell 0.0.3).
+                ("Vulkan via MoltenVK", selftest_moltenvk),
             ]
             var results: [String] = []
             for (name, test) in tests {

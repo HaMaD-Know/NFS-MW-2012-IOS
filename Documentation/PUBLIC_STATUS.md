@@ -23,7 +23,8 @@ Last updated: 2026-11-17.
 | These replacements inside ReXGlue on the iPad | **Not tested yet.** The self-test proves the mechanisms on iPadOS, not the patched runtime | — |
 | ReXGlue compiles for iOS with patches 0001–0005 (guest memory via a **Mach memory entry**, arm64 fibers) | **Yes**: 0 errors (earlier tmp-file variant: run 44135637165) | Run 44284348684 |
 | iPad app with the ReXGlue runtime embedded (14 ReXGlue libraries, SDL3, MoltenVK as `libMoltenVK.dylib`, patches 0001–0006) builds in CI | **Yes**: all libraries arm64 + iOS, every `@rpath` dependency present, app 57 MB | Run 44289701605 |
-| Those libraries load on the iPad; MoltenVK creates a Vulkan device | **Not tested yet** (shell 0.0.3, self-test v3) | — |
+| Those libraries load on the iPad | **Yes**: 16 of 16 ReXGlue libraries load inside the app, 14 runtime modules answer (shells 0.0.3–0.0.6) | Device logs 2026-11-18 |
+| Vulkan via MoltenVK on the iPad | **PASS (shell 0.0.6, two runs, no crash)**: MoltenVK 1.4.2, `vkCreateInstance` succeeds, device "Apple M2 GPU", Vulkan 1.2, Metal 4 / Apple GPU family 8, 5,461 MB GPU memory available. Fixed by patch 0007 (host allocator passes through to malloc/free on iOS) | Device log 2026-11-18 |
 | ReXGlue runtime **runs** on the iPad | **Not attempted.** Compiling for iOS does not show that it runs | — |
 | Analysis of an Xbox 360 executable | Not attempted; requires the user's own copy | — |
 | Bring Your Own Game: import, verification, re-selection | **Designed, not implemented** (`BYOG_DESIGN.md`) | — |
@@ -35,6 +36,6 @@ Last updated: 2026-11-17.
 process with its own entitlements, so the memory limit and process behaviour may differ for a directly
 installed app.
 
-| Vulkan via MoltenVK on the iPad | **Crashed (shell 0.0.3–0.0.5)** in `vkCreateInstance`: MoltenVK freed a libc++-allocated block through ReXGlue's operator delete and ReXGlue's host allocator aborted. Cause: inside LiveContainer the app is not the process's main executable, so ReXGlue's process-wide new/delete replacement does not cover the system C++ library. Fix in test: patch 0007 (host allocator passes blocks straight to malloc/free on iOS) | Device logs 2026-11-18 |
+| Vulkan via MoltenVK on the iPad, history | **Crashed in shells 0.0.3–0.0.5, fixed in 0.0.6** in `vkCreateInstance`: MoltenVK freed a libc++-allocated block through ReXGlue's operator delete and ReXGlue's host allocator aborted. Cause: inside LiveContainer the app is not the process's main executable, so ReXGlue's process-wide new/delete replacement does not cover the system C++ library. Fix in test: patch 0007 (host allocator passes blocks straight to malloc/free on iOS) | Device logs 2026-11-18 |
 
 Nothing in this table is marked as working until there is evidence for it.

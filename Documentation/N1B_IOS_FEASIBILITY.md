@@ -24,6 +24,8 @@ its memory is accounted honestly. A stays as a fallback: its pages are file-back
 back to flash under pressure, a stutter and wear risk for a game. Patch 0004 currently implements A
 and should move to B. None of this has yet run *inside* ReXGlue on the device (B7).
 
+| 2026-11-18 | **Packaging and Vulkan on the device** | Shells 0.0.3–0.0.6 inside LiveContainer. All 16 ReXGlue libraries load. `vkCreateInstance` crashed in 0.0.3–0.0.5: MoltenVK freed a libc++ block through ReXGlue's operator delete (the app is not the main executable inside LiveContainer, so the forwarders do not cover libc++). Patch 0007 makes the host allocator pass through to malloc/free on iOS. **0.0.6: no crash; Vulkan instance created, Apple M2 GPU, Vulkan 1.2, 5,461 MB GPU memory.** B4 (MoltenVK) and B5 (packaging) done on the device | Device logs |
+
 ### Device findings and their consequences (2026-11-17)
 
 | # | Finding | Consequence | Next action |

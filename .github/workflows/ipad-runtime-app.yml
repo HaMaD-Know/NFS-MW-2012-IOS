@@ -1,0 +1,166 @@
+# N1-b packaging: the iPad test shell with the patched ReXGlue runtime libraries, SDL3 and MoltenVK
+# embedded in its Frameworks folder, as an unsigned arm64 IPA.
+# The shell's "Run runtime self-test" then loads them on the device. No game code or data.
+name: iPad runtime app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "App/**"
+      - "patches/rexglue-ios/**"
+      - ".github/workflows/ipad-runtime-app.yml"
+
+permissions:
+  contents: read
+
+env:
+  REXGLUE_REF: ebac1cf0d04bab0042a5dd6148b34ab3953e9c0d
+  IOS_DEPLOYMENT_TARGET: "17.0"
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out this project
+        uses: actions/checkout@v4
+        with:
+          path: project
+
+      - name: Check out ReXGlue SDK at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: rexglue/rexglue-sdk
+          ref: ${{ env.REXGLUE_REF }}
+          submodules: recursive
+          path: rexglue-sdk
+
+      - name: Select newest Xcode
+        run: |
+          newest=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$newest" ]; then sudo xcode-select -s "$newest/Contents/Developer"; fi
+          xcodebuild -version
+
+      - name: Set up toolchain
+        uses: ./rexglue-sdk/.github/actions/setup-toolchain
+        with:
+          platform: mac-arm64
+
+      - name: Vulkan Memory Allocator header (pinned, checksum-verified)
+        env:
+          VMA_REF: v3.3.0
+          VMA_SHA256: 90ce12fc4a2466235a09ae02905dd0c13aee80c1bbf11b331ab61230c2ceb112
+        run: |
+          inc="$RUNNER_TEMP/vma/include"; mkdir -p "$inc"
+          curl -fsSL -o "$inc/vk_mem_alloc.h" \
+            "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/${VMA_REF}/include/vk_mem_alloc.h"
+          echo "${VMA_SHA256}  $inc/vk_mem_alloc.h" | shasum -a 256 -c -
+          echo "VMA_INC=$inc" >> "$GITHUB_ENV"
+
+      - name: Apply the iOS patch series
+        working-directory: rexglue-sdk
+        run: |
+          for p in ../project/patches/rexglue-ios/*.patch; do
+            echo "== $(basename "$p")"; git apply --whitespace=nowarn "$p"
+          done
+
+      - name: Build ReXGlue for iOS arm64
+        run: |
+          set -o pipefail
+          cmake -S rexglue-sdk -B build-ios -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+            -DCMAKE_CXX_STANDARD=23 -DCMAKE_C_FLAGS="-march=armv8-a" -DCMAKE_CXX_FLAGS="-march=armv8-a" \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
+            -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_ENABLE_TRACY=OFF -DREXGLUE_VMA_INCLUDE_DIR="$VMA_INC" \
+            2>&1 | tail -20
+          cmake --build build-ios --parallel 2>&1 | tail -20
+
+      # The Vulkan SDK ships MoltenVK for iOS only as a static library; ReXGlue loads the Vulkan
+      # runtime at run time, so link it into a dynamic library.
+      - name: Build libMoltenVK.dylib for iOS
+        run: |
+          mvk=$(find "$VULKAN_SDK" -path '*MoltenVK.xcframework/ios-arm64/libMoltenVK.a' | head -1)
+          test -n "$mvk" || { echo "::error::libMoltenVK.a for iOS arm64 not found in the Vulkan SDK"; exit 1; }
+          echo "Using $mvk"
+          xcrun -sdk iphoneos clang++ -dynamiclib -arch arm64 \
+            -miphoneos-version-min="$IOS_DEPLOYMENT_TARGET" \
+            -Wl,-all_load "$mvk" \
+            -framework Metal -framework Foundation -framework QuartzCore -framework IOSurface \
+            -framework CoreGraphics -framework UIKit \
+            -install_name @rpath/libMoltenVK.dylib -o "$RUNNER_TEMP/libMoltenVK.dylib"
+          nm -gU "$RUNNER_TEMP/libMoltenVK.dylib" | grep -E ' _vkGetInstanceProcAddr$'
+          ls -l "$RUNNER_TEMP/libMoltenVK.dylib"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build the shell (arm64, unsigned)
+        working-directory: project/App
+        run: |
+          set -o pipefail
+          xcodegen generate
+          xcodebuild -project NFSMWShell.xcodeproj -target NFSMWShell -configuration Release \
+            -sdk iphoneos SYMROOT="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -15
+
+      - name: Embed runtime libraries in the app
+        run: |
+          app="project/App/build/Release-iphoneos/NFSMWShell.app"
+          fw="$app/Frameworks"; mkdir -p "$fw"
+          cp rexglue-sdk/out/ios-arm64/librex*.dylib "$fw/"
+          cp rexglue-sdk/out/ios-arm64/libSDL3d.0.dylib "$fw/"
+          cp "$RUNNER_TEMP/libMoltenVK.dylib" "$fw/"
+          # Let each library find its neighbours, then re-sign ad hoc (the sideloading tool
+          # re-signs everything with the user's Apple ID at install time).
+          for f in "$fw"/*.dylib; do
+            install_name_tool -add_rpath @loader_path "$f" 2>/dev/null || true
+            codesign --force --sign - "$f" >/dev/null
+          done
+          if ! otool -l "$app/NFSMWShell" | grep -A2 LC_RPATH | grep -q '@executable_path/Frameworks'; then
+            install_name_tool -add_rpath @executable_path/Frameworks "$app/NFSMWShell"
+          fi
+          echo "APP=$app" >> "$GITHUB_ENV"
+
+      - name: Verify the embedded libraries
+        run: |
+          fw="$APP/Frameworks"; missing=0; report="$RUNNER_TEMP/embedded.txt"
+          {
+            echo "Embedded in Frameworks:"
+            for f in "$fw"/*.dylib; do
+              plat=$(xcrun vtool -show-build "$f" | awk '/platform/{print $2; exit}')
+              echo "  $(basename "$f")  $(du -h "$f" | cut -f1)  $(lipo -archs "$f")  $plat"
+              [ "$plat" = "IOS" ] || { echo "    NOT AN iOS BINARY"; missing=1; }
+              for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep '^@rpath/'); do
+                [ -f "$fw/${dep#@rpath/}" ] || { echo "    missing dependency ${dep}"; missing=1; }
+              done
+            done
+            echo "App size: $(du -sh "$APP" | cut -f1)"
+          } | tee "$report"
+          body=$(sed -e 's/%/%25/g' "$report" | awk 'BEGIN{ORS="%0A"} {print}' | cut -c1-3800)
+          echo "::notice title=Embedded runtime libraries::${body}"
+          exit $missing
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p dist/Payload
+          cp -R "$APP" dist/Payload/
+          (cd dist && zip -qry NFSMWShell-runtime-unsigned.ipa Payload)
+          (cd dist && shasum -a 256 NFSMWShell-runtime-unsigned.ipa | tee NFSMWShell-runtime-unsigned.ipa.sha256)
+          ls -l dist
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: NFSMWShell-runtime-unsigned-ipa
+          path: |
+            dist/NFSMWShell-runtime-unsigned.ipa
+            dist/NFSMWShell-runtime-unsigned.ipa.sha256
+          retention-days: 30

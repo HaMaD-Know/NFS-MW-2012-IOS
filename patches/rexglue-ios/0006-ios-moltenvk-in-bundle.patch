@@ -1,0 +1,17 @@
+diff --git a/src/gpu/xenos/host/vulkan/vulkan_moltenvk.cpp b/src/gpu/xenos/host/vulkan/vulkan_moltenvk.cpp
+index 114e784..caea636 100644
+--- a/src/gpu/xenos/host/vulkan/vulkan_moltenvk.cpp
++++ b/src/gpu/xenos/host/vulkan/vulkan_moltenvk.cpp
+@@ -174,6 +174,12 @@ void SetIfUnset(std::string_view name, const fs::path& value) {
+ MacOSVulkanRuntimePaths DetectMacOSVulkanRuntimePaths() {
+   MacOSVulkanRuntimePaths paths;
+ 
++#if REX_PLATFORM_IOS
++  // iOS has no Vulkan loader and dlopen does not search the app bundle for bare names. The app
++  // ships MoltenVK as Frameworks/libMoltenVK.dylib next to the ReXGlue libraries; try it first.
++  AppendExisting(paths.loader_candidates, rex::platform::GetLibraryFolder() / "libMoltenVK.dylib");
++#endif
++
+   for (const std::filesystem::path& root : CollectSDKRoots()) {
+     if (paths.sdk_root.empty()) {
+       paths.sdk_root = root;

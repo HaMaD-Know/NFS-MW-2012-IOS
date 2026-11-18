@@ -43,6 +43,17 @@ int selftest_backing_vm_remap(selftest_log_fn log);
 /** arm64 fiber switch (RexFiberArm64.c): round trips, fiber-to-fiber, deep stack, speed. */
 int selftest_fibers_arm64(selftest_log_fn log);
 
+// --- Packaging probe (RuntimeProbe.c) ---
+
+/** Sets the app's Frameworks folder, where CI places the ReXGlue libraries and MoltenVK. */
+void selftest_set_frameworks_dir(const char *path);
+
+/** dlopens every ReXGlue library in Frameworks and reads each module's build identity. */
+int selftest_runtime_libraries(selftest_log_fn log);
+
+/** Loads MoltenVK, creates a Vulkan instance and lists the physical devices. */
+int selftest_moltenvk(selftest_log_fn log);
+
 #ifdef __cplusplus
 }
 #endif

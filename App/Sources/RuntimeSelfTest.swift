@@ -26,11 +26,14 @@ final class RuntimeSelfTest: ObservableObject {
         summary = ""
 
         DispatchQueue.global(qos: .userInitiated).async {
-            RuntimeSelfTest.emit(String(format: "Self-test v2 start. Device %@, app memory available %.2f GB",
+            RuntimeSelfTest.emit(String(format: "Self-test v3 start. Device %@, app memory available %.2f GB",
                                         DeviceInfo.machine, DeviceInfo.availableMemoryGB))
-            // Self-test version 2 (after the first device run on 2026-11-17).
-            // The two "ReXGlue original" tests are kept to show the before/after on the same device.
+            selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
+            // Version 3: packaging probe first (ReXGlue libraries and MoltenVK inside the app),
+            // then the version 2 mechanism tests. The two "original" tests show the before/after.
             let tests: [(String, (selftest_log_fn?) -> Int32)] = [
+                ("ReXGlue libraries in the app", selftest_runtime_libraries),
+                ("Vulkan via MoltenVK", selftest_moltenvk),
                 ("Address space", selftest_address_space),
                 ("Memory A: temporary file", selftest_backing_file),
                 ("Memory B: Mach memory entry", selftest_backing_mach_entry),

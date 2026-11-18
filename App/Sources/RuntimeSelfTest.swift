@@ -26,7 +26,7 @@ final class RuntimeSelfTest: ObservableObject {
         summary = ""
 
         DispatchQueue.global(qos: .userInitiated).async {
-            RuntimeSelfTest.emit(String(format: "Self-test v5 start. Device %@, app memory available %.2f GB",
+            RuntimeSelfTest.emit(String(format: "Self-test v6 start. Device %@, app memory available %.2f GB",
                                         DeviceInfo.machine, DeviceInfo.availableMemoryGB))
             selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
             setenv("MVK_CONFIG_LOG_LEVEL", "3", 1)  // MoltenVK: errors, warnings and info

@@ -30,4 +30,11 @@ Last updated: 2026-11-17.
 | Supported game edition and manifest | Not determined (`SUPPORTED_GAME_DATA.md`) | — |
 | Importing a real game on an iPad | **Not done.** Will not be claimed until tested on a real iPad | — |
 
+**Test environment note (2026-11-18):** all iPad results above were measured with the shell running
+**inside LiveContainer** (free Apple ID), not installed directly. LiveContainer runs apps inside its own
+process with its own entitlements, so the memory limit and process behaviour may differ for a directly
+installed app.
+
+| Vulkan via MoltenVK on the iPad | **Crashed (shell 0.0.3–0.0.5)** in `vkCreateInstance`: MoltenVK freed a libc++-allocated block through ReXGlue's operator delete and ReXGlue's host allocator aborted. Cause: inside LiveContainer the app is not the process's main executable, so ReXGlue's process-wide new/delete replacement does not cover the system C++ library. Fix in test: patch 0007 (host allocator passes blocks straight to malloc/free on iOS) | Device logs 2026-11-18 |
+
 Nothing in this table is marked as working until there is evidence for it.

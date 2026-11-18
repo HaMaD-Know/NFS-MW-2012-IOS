@@ -1,0 +1,64 @@
+diff --git a/src/base/host_alloc.cpp b/src/base/host_alloc.cpp
+index 3b9816e..4748549 100644
+--- a/src/base/host_alloc.cpp
++++ b/src/base/host_alloc.cpp
+@@ -26,6 +26,17 @@
+ #if REX_PLATFORM_WIN32
+ #include <malloc.h>
+ #endif
++#if REX_PLATFORM_IOS
++#include <malloc/malloc.h>
++#endif
++
++// iOS: the host allocator passes blocks straight to malloc/free, without its header.
++// ReXGlue replaces operator new/delete in every binary; elsewhere the host executable's forwarders
++// make that replacement process-wide. On iOS that is not guaranteed: an app run inside a container
++// app (e.g. LiveContainer) is not the process's main executable, so the system C++ library keeps its
++// own operator new. On an iPad Pro M2 (2026-11-18) MoltenVK then freed a libc++-allocated block
++// through ReXGlue's operator delete and the header check aborted. With plain malloc blocks either
++// allocator can free any block. Cost on iOS only: no block checks and no per-tag statistics.
+ 
+ namespace rex::memory {
+ 
+@@ -199,6 +210,18 @@ Header* HeaderOf(void* ptr) noexcept {
+ }
+ 
+ void* AllocBlock(size_t size, size_t align, detail::AllocType type) noexcept {
++#if REX_PLATFORM_IOS
++  (void)type;
++  if (align != 0 && !std::has_single_bit(align)) {
++    return nullptr;
++  }
++  const size_t bytes = size != 0 ? size : 1;
++  if (align > alignof(std::max_align_t)) {
++    void* block = nullptr;
++    return posix_memalign(&block, align, bytes) == 0 ? block : nullptr;
++  }
++  return std::malloc(bytes);
++#endif
+   if (g_fail_count.load(std::memory_order_relaxed) != 0 &&
+       g_fail_count.fetch_sub(1, std::memory_order_relaxed) != 0) {
+     return nullptr;
+@@ -245,6 +268,9 @@ void HostFree(void* ptr, size_t size, size_t align) noexcept {
+ }
+ 
+ size_t HostSize(const void* ptr) noexcept {
++#if REX_PLATFORM_IOS
++  return malloc_size(ptr);  // usable size, at least the requested size
++#endif
+   const Header* header = reinterpret_cast<const Header*>(static_cast<const u8*>(ptr) - kHeaderSize);
+   return static_cast<size_t>(header->packed & kSizeMask);
+ }
+@@ -344,6 +370,12 @@ void DeleteBlock(void* ptr, size_t size, AllocType type) noexcept {
+   if (!ptr) {
+     return;
+   }
++#if REX_PLATFORM_IOS
++  (void)size;
++  (void)type;
++  std::free(ptr);
++  return;
++#endif
+   Header* header = HeaderOf(ptr);
+   if constexpr (kChecks) {
+     if (reinterpret_cast<uintptr_t>(ptr) % kHeaderSize != 0 || header->magic != kLiveMagic) {

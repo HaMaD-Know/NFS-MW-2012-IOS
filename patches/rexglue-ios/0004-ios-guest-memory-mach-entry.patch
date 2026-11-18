@@ -1,0 +1,166 @@
+diff --git a/src/base/memory_posix.cpp b/src/base/memory_posix.cpp
+index 3d214a1..e525b63 100644
+--- a/src/base/memory_posix.cpp
++++ b/src/base/memory_posix.cpp
+@@ -46,6 +46,10 @@
+ 
+ #include "base/memory_posix.h"
+ 
++#if REX_PLATFORM_IOS
++#include <dlfcn.h>
++#endif
++
+ #if REX_PLATFORM_LINUX
+ #include "base/proc_map.h"
+ #endif
+@@ -367,6 +371,45 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
+ #endif
+ }
+ 
++#if REX_PLATFORM_IOS
++namespace {
++// iOS forbids shm_open in the app sandbox (EPERM on an iPad Pro M2, iPadOS 26.6.1). File mappings
++// use a Mach named memory entry instead: one memory object that several views map at chosen
++// offsets, which is what shm_open provided. Verified on that device by the project's self-test
++// (2026-11-18): ReXGlue's nine-view layout, mirrors and fault handling. The two Mach calls are
++// looked up at run time, as in that test, so the build does not depend on which Mach VM
++// declarations a given iOS SDK exposes.
++using MakeMemoryEntryFn = kern_return_t (*)(vm_map_t, memory_object_size_t*, memory_object_offset_t,
++                                            vm_prot_t, mach_port_t*, mach_port_t);
++using VmMapFn = kern_return_t (*)(vm_map_t, vm_address_t*, vm_size_t, vm_address_t, int,
++                                  mach_port_t, vm_offset_t, boolean_t, vm_prot_t, vm_prot_t,
++                                  vm_inherit_t);
++constexpr vm_prot_t kMapMemNamedCreate = 0x020000;  // MAP_MEM_NAMED_CREATE
++
++MakeMemoryEntryFn IosMakeMemoryEntry() {
++  static const auto fn =
++      reinterpret_cast<MakeMemoryEntryFn>(dlsym(RTLD_DEFAULT, "mach_make_memory_entry_64"));
++  return fn;
++}
++
++VmMapFn IosVmMap() {
++  static const auto fn = reinterpret_cast<VmMapFn>(dlsym(RTLD_DEFAULT, "vm_map"));
++  return fn;
++}
++
++vm_prot_t ToMachProtect(PageAccess access) {
++  switch (access) {
++    case PageAccess::kReadOnly:
++      return VM_PROT_READ;
++    case PageAccess::kReadWrite:
++      return VM_PROT_READ | VM_PROT_WRITE;
++    default:
++      return VM_PROT_NONE;
++  }
++}
++}  // namespace
++#endif  // REX_PLATFORM_IOS
++
+ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, size_t length,
+                                           PageAccess access, [[maybe_unused]] bool commit) {
+ #if REX_PLATFORM_ANDROID
+@@ -388,6 +431,29 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+     return kFileMappingHandleInvalid;
+   }
+   return ashmem_fd;
++#elif REX_PLATFORM_IOS
++  (void)path;
++  if (access == PageAccess::kExecuteReadOnly || access == PageAccess::kExecuteReadWrite) {
++    return kFileMappingHandleInvalid;  // no executable memory on iOS
++  }
++  const auto make_entry = IosMakeMemoryEntry();
++  if (!make_entry) {
++    return kFileMappingHandleInvalid;
++  }
++  memory_object_size_t size = length;
++  mach_port_t entry = MACH_PORT_NULL;
++  const kern_return_t kr = make_entry(mach_task_self(), &size, 0,
++                                      kMapMemNamedCreate | VM_PROT_READ | VM_PROT_WRITE, &entry,
++                                      MACH_PORT_NULL);
++  if (kr != KERN_SUCCESS || !MACH_PORT_VALID(entry)) {
++    return kFileMappingHandleInvalid;
++  }
++  if (size < length) {
++    mach_port_deallocate(mach_task_self(), entry);
++    return kFileMappingHandleInvalid;
++  }
++  // The handle type is int on POSIX; a port name fits, and MACH_PORT_DEAD equals the invalid -1.
++  return static_cast<FileMappingHandle>(entry);
+ #else
+   int oflag;
+   switch (access) {
+@@ -448,9 +514,14 @@ void RemoveStaleFileMappings([[maybe_unused]] std::string_view prefix) {
+ #endif
+ }
+ 
+-void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
++void CloseFileMappingHandle(FileMappingHandle handle,
++                            [[maybe_unused]] const std::filesystem::path& path) {
++#if REX_PLATFORM_IOS
++  mach_port_deallocate(mach_task_self(), static_cast<mach_port_t>(handle));
++#else
+   close(handle);
+-#if !REX_PLATFORM_ANDROID
++#endif
++#if !REX_PLATFORM_ANDROID && !REX_PLATFORM_IOS
+   auto full_path = BuildSHMName(path);
+   shm_unlink(full_path.c_str());
+ #endif
+@@ -463,6 +534,27 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+     return nullptr;
+   }
+ 
++#if REX_PLATFORM_IOS
++  const auto vm_map_fn = IosVmMap();
++  if (!vm_map_fn || access == PageAccess::kExecuteReadOnly ||
++      access == PageAccess::kExecuteReadWrite) {
++    return nullptr;
++  }
++  vm_address_t address = reinterpret_cast<vm_address_t>(base_address);
++  const int vm_flags = base_address ? (VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) : VM_FLAGS_ANYWHERE;
++  const kern_return_t kr =
++      vm_map_fn(mach_task_self(), &address, length, 0, vm_flags, static_cast<mach_port_t>(handle),
++                static_cast<vm_offset_t>(file_offset), FALSE, ToMachProtect(access),
++                VM_PROT_READ | VM_PROT_WRITE, VM_INHERIT_NONE);
++  if (kr != KERN_SUCCESS) {
++    return nullptr;
++  }
++  if (base_address && address != reinterpret_cast<vm_address_t>(base_address)) {
++    munmap(reinterpret_cast<void*>(address), length);
++    return nullptr;
++  }
++  return reinterpret_cast<void*>(address);
++#else
+   int flags = MAP_SHARED;
+ 
+   // MAP_FIXED replaces the reserved range, MAP_FIXED_NOREPLACE would fail with EEXIST.
+@@ -482,6 +574,7 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
+   }
+ 
+   return result;
++#endif
+ }
+ 
+ bool UnmapFileView([[maybe_unused]] FileMappingHandle handle, void* base_address, size_t length) {
+diff --git a/src/kernel/memory.cpp b/src/kernel/memory.cpp
+index 4ca5049..d94bd33 100644
+--- a/src/kernel/memory.cpp
++++ b/src/kernel/memory.cpp
+@@ -417,8 +417,17 @@ int GuestAddressSpace::MapViewsMac() {
+                                            kViewRanges[n].virtual_address_start + 1);
+     size_t file_offset = static_cast<size_t>(kViewRanges[n].target_address & page_mask);
+     void* target_address = mapping_base + kViewRanges[n].virtual_address_start;
++#if REX_PLATFORM_IOS
++    // iOS: the mapping handle is a Mach memory entry, not a file descriptor.
++    void* result = rex::memory::MapFileView(mapping_, target_address, view_size,
++                                            rex::memory::PageAccess::kReadWrite, file_offset);
++    if (!result) {
++      result = MAP_FAILED;
++    }
++#else
+     void* result = mmap(target_address, view_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+                         mapping_, file_offset);
++#endif
+     if (result == MAP_FAILED || result != target_address) {
+       int err = errno;
+       REXSYS_ERROR(

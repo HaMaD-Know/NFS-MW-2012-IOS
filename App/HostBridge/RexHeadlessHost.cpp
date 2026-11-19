@@ -17,6 +17,11 @@
 #include <rex/cli.h>
 #include <rex/gpu/graphics_system.h>
 #include <rex/hid/input_system.h>
+#include <rex/kernel/guest_memory.h>
+#include <rex/kernel/title_paths.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/image.h>
+#include <rex/setting.h>
 #include <rex/result.h>
 #include <rex/ui/ui_system.h>
 
@@ -273,7 +278,87 @@ void RunWindow(Host &app, int seconds) {
             : "  Window time is up");
 }
 
-int Run(const std::filesystem::path &root, bool window, int seconds) {
+// Step after B7: ReXGlue's own guest memory on the iPad. TitleRuntime::Load with an image that
+// has no recompiled code ("tool mode") and an empty title.entry maps the full guest address space
+// (patch 0004's Mach memory entry and its nine views) and creates the kernel, loading no
+// executable. The test then allocates guest memory, writes and reads it, checks that physical
+// memory is visible through its mirror views, and unloads.
+bool RunGuestMemory() {
+  static const ::PPCFuncMapping kNoFunctions[] = {{0, nullptr}};
+  rex::ppc::PPCImage image{};
+  image.func_mappings = kNoFunctions;
+  rex::kernel::TitleRuntime title(image);
+  if (auto set = title.GetTitlePaths().entry.SetText(rex::SettingLayer::kTitle, ""); !set) {
+    Say("  Could not clear title.entry: " + set.error().GetDescription());
+    return false;
+  }
+  Say("  TitleRuntime::Load (tool mode, no executable): starting");
+  if (auto loaded = title.Load(); !loaded) {
+    Say("  Load FAILED: " + loaded.error().GetDescription());
+    return false;
+  }
+  Say("  Load OK: guest memory mapped, kernel services created");
+  rex::kernel::GuestMemory &memory = title.GetGuestMemory();
+  std::uint8_t *base = title.GetMembase().GetBase();
+  bool ok = base != nullptr;
+  char text[200];
+  std::snprintf(text, sizeof text, "  Guest memory base %p", static_cast<void *>(base));
+  Say(text);
+
+  // Title (virtual) memory: allocate 1 MiB, store and load through ReXGlue, then read the same
+  // bytes directly through the host mapping.
+  constexpr std::uint32_t kPattern = 0xC0FFEE01u;
+  auto virt = memory.Allocate(1u << 20, 4096, rex::kernel::GuestProtect::kReadWrite);
+  if (!virt) {
+    Say("  Title memory allocate FAILED: " + virt.error().GetDescription());
+    ok = false;
+  } else {
+    const bool stored = memory.Store<std::uint32_t>(*virt + 0x100, kPattern).has_value();
+    const auto loaded = memory.Load<std::uint32_t>(*virt + 0x100);
+    const bool host_sees = base && base[*virt + 0x100] != 0;  // big-endian store: first byte C0
+    const bool good = stored && loaded && *loaded == kPattern && host_sees;
+    std::snprintf(text, sizeof text,
+                  "  Title memory: 1 MiB at guest 0x%08X, store/load %08X, host mapping %s -> %s",
+                  *virt, loaded ? *loaded : 0u, host_sees ? "sees it" : "EMPTY",
+                  good ? "ok" : "FAIL");
+    Say(text);
+    ok = ok && good;
+    (void)memory.Free(*virt);
+  }
+
+  // Physical memory: allocate 64 KiB, write through the 0xA0000000 view, read through the
+  // 0xC0000000 view, which maps the same physical pages.
+  auto phys = memory.Allocate(64u << 10, 4096, rex::kernel::GuestProtect::kReadWrite,
+                              rex::kernel::GuestHeap::kPhysical);
+  if (!phys) {
+    Say("  Physical memory allocate FAILED: " + phys.error().GetDescription());
+    ok = false;
+  } else {
+    const std::uint32_t address = *phys + 0x200;
+    const bool stored = memory.Store<std::uint32_t>(address, 0x5EEDF00Du).has_value();
+    std::uint32_t mirror_value = 0;
+    bool mirror_ok = false;
+    if (base && address >= 0xA0000000u && address < 0xC0000000u) {
+      const std::uint8_t *mirror = base + (static_cast<std::uint64_t>(address) - 0xA0000000u + 0xC0000000u);
+      mirror_value = (std::uint32_t(mirror[0]) << 24) | (std::uint32_t(mirror[1]) << 16) |
+                     (std::uint32_t(mirror[2]) << 8) | mirror[3];
+      mirror_ok = mirror_value == 0x5EEDF00Du;
+    }
+    std::snprintf(text, sizeof text,
+                  "  Physical memory: 64 KiB at guest 0x%08X, mirror 0xC0000000 view reads %08X -> %s",
+                  *phys, mirror_value, stored && mirror_ok ? "ok" : "FAIL");
+    Say(text);
+    ok = ok && stored && mirror_ok;
+    (void)memory.Free(*phys);
+  }
+
+  Say("  TitleRuntime::Unload: starting");
+  title.Unload();
+  Say("  Unload done");
+  return ok;
+}
+
+int Run(const std::filesystem::path &root, bool window, int seconds, bool guest_memory) {
   std::error_code error;
   std::filesystem::create_directories(root, error);
   Say("  App folder: " + root.string() + (error ? " (could not create: " + error.message() + ")" : ""));
@@ -305,6 +390,11 @@ int Run(const std::filesystem::path &root, bool window, int seconds) {
       Say(std::string("  Init OK, phase: ") + PhaseName(app.GetPhase()) +
           (app.HasUISystem() ? "" : " (no UI system)"));
       if (window) RunWindow(app, seconds);
+      if (guest_memory) {
+        const bool memory_ok = RunGuestMemory();
+        Say(std::string("  Guest memory test: ") + (memory_ok ? "ok" : "FAILED"));
+        init_ok = init_ok && memory_ok;
+      }
     }
     Say("  Shutdown: starting");
     exit_code = app.Shutdown();
@@ -315,7 +405,7 @@ int Run(const std::filesystem::path &root, bool window, int seconds) {
   return init_ok && exit_code == 0;
 }
 
-int Guarded(const char *root, LogFn log, bool window, int seconds) {
+int Guarded(const char *root, LogFn log, bool window, int seconds, bool guest_memory = false) {
   g_log = log;
   static std::atomic<bool> ran{false};
   if (ran.exchange(true)) {
@@ -323,7 +413,8 @@ int Guarded(const char *root, LogFn log, bool window, int seconds) {
     return 0;
   }
   try {
-    return Run(root ? std::filesystem::path(root) : std::filesystem::path("."), window, seconds);
+    return Run(root ? std::filesystem::path(root) : std::filesystem::path("."), window, seconds,
+               guest_memory);
   } catch (const std::exception &failure) {
     Say(std::string("  FAIL: C++ exception: ") + failure.what());
   } catch (...) {
@@ -343,4 +434,9 @@ extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_window(const
                                                                             LogFn log,
                                                                             int seconds) {
   return Guarded(root, log, true, seconds);
+}
+
+extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_memory(const char *root,
+                                                                            LogFn log) {
+  return Guarded(root, log, false, 0, true);
 }

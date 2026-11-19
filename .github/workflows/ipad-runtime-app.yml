@@ -103,7 +103,7 @@ jobs:
               "$RUNNER_TEMP/RexHeadlessHost.o" -L"$lib" -lrexappd -lrexkerneld -lrexbased \
               -install_name @rpath/libnfsmwhost.dylib -Wl,-rpath,@loader_path \
               -o "$RUNNER_TEMP/libnfsmwhost.dylib"
-            nm -gU "$RUNNER_TEMP/libnfsmwhost.dylib" | grep -E ' _nfsmw_rexhost_(headless|window)$'
+            nm -gU "$RUNNER_TEMP/libnfsmwhost.dylib" | grep -E ' _nfsmw_rexhost_(headless|window|memory)$'
             otool -L "$RUNNER_TEMP/libnfsmwhost.dylib"
           }
           set +e  # the step's own -e would end it here, before the errors are reported

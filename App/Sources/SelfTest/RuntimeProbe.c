@@ -230,12 +230,14 @@ static void *load_host(selftest_log_fn log, const char *symbol) {
 
 int selftest_rexglue_headless(selftest_log_fn log) {
   typedef int (*HostFn)(const char *root, selftest_log_fn log);
-  HostFn start = (HostFn)load_host(log, "nfsmw_rexhost_headless");
+  // Since shell 0.1.1: the start also loads a title runtime with no executable, which maps
+  // ReXGlue's guest memory, and checks it (nfsmw_rexhost_memory).
+  HostFn start = (HostFn)load_host(log, "nfsmw_rexhost_memory");
   if (!start) return 0;
   char root[1200];
   snprintf(root, sizeof root, "%s/rexglue", g_documents);
   const int ok = start(root, log);
-  say(log, "%s: ReXGlue runtime started and stopped with no game", ok ? "PASS" : "FAIL");
+  say(log, "%s: ReXGlue runtime and its guest memory, no game", ok ? "PASS" : "FAIL");
   return ok;
 }
 

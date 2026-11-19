@@ -14,10 +14,13 @@
 // One ReXGlue start per app launch: a second start in the same process is refused.
 #include <rex/app/app.h>
 #include <rex/app_info.h>
+#include <rex/apu/audio_driver.h>
+#include <rex/apu/audio_system.h>
 #include <rex/cli.h>
 #include <rex/gpu/graphics_system.h>
 #include <rex/hid/input_system.h>
 #include <rex/kernel/guest_memory.h>
+#include <rex/platform/thread.h>
 #include <rex/kernel/title_paths.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/ppc/image.h>
@@ -28,6 +31,9 @@
 #include <dlfcn.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <thread>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -217,12 +223,56 @@ const char *PadTypeName(rex::hid::PadType type) {
 }
 
 // Runs the window for `seconds`, reporting frames and the first controller once a second.
+// Plays a quiet 440 Hz tone for about two seconds through ReXGlue's audio system (front left and
+// right), the way a title's audio reaches the device: one planar 6-channel frame of 256 samples
+// at 48 kHz per Submit. Returns a report line.
+std::string PlayTestTone(rex::apu::IAudioSystem &audio) {
+  using rex::apu::kAudioChannelSamples;
+  using rex::apu::kAudioFrameSamples;
+  using rex::apu::kAudioSampleRate;
+  auto stream = audio.OpenStream([] {});
+  if (!stream) return "Audio: could not open a stream: " + stream.error().GetDescription();
+  constexpr int kFrames = 2 * static_cast<int>(kAudioSampleRate / kAudioChannelSamples);  // ~2 s
+  std::array<float, kAudioFrameSamples> frame{};
+  double phase = 0.0;
+  const double step = 2.0 * 3.14159265358979 * 440.0 / kAudioSampleRate;
+  int submitted = 0, waits = 0;
+  for (int f = 0; f < kFrames; f++) {
+    for (std::uint32_t i = 0; i < kAudioChannelSamples; i++) {
+      const float sample = static_cast<float>(0.15 * std::sin(phase));
+      phase += step;
+      frame[i] = sample;                         // front left
+      frame[kAudioChannelSamples + i] = sample;  // front right
+    }
+    for (int tries = 0; tries < 2000; tries++) {
+      if (audio.Submit(*stream, rex::apu::AudioFrame(frame))) {
+        submitted++;
+        break;
+      }
+      waits++;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));  // let the queue drain
+  const rex::apu::AudioStats stats = audio.GetStats();
+  audio.CloseStream(*stream);
+  return "Audio: tone played, " + std::to_string(submitted) + " of " + std::to_string(kFrames) +
+         " frames accepted (" + std::to_string(waits) + " waits for a full queue); device " +
+         std::to_string(audio.GetOutputChannels()) + " channels; latency " +
+         std::to_string(stats.latency_us / 1000) + " ms; underruns " + std::to_string(stats.underruns);
+}
+
 void RunWindow(Host &app, int seconds) {
   rex::gpu::IGraphicsSystem &graphics = app.GetGraphics();
   rex::ui::IUISystem &ui = app.GetUI();
   rex::hid::IInputSystem &input = app.GetInput();
   Say(std::string("  Graphics driver: ") + (graphics.HasDriver() ? graphics.GetDriverName() : "none") +
       "; window: " + (ui.HasWindow() ? "open" : "none") + (ui.IsHeadless() ? " (headless)" : ""));
+  rex::apu::IAudioSystem &audio = app.GetAudio();
+  Say("  Audio driver: " + audio.GetSettings().driver.Get() + ", " +
+      std::to_string(audio.GetOutputChannels()) + " output channels. Playing a 2-second test tone.");
+  std::string tone_report;
+  std::thread tone([&audio, &tone_report] { tone_report = PlayTestTone(audio); });
   Say("  Running the window for " + std::to_string(seconds) +
       " seconds. Press buttons on the controller now.");
 
@@ -277,6 +327,8 @@ void RunWindow(Host &app, int seconds) {
   }
   Say(ended ? "  The UI loop ended early (window closed or shutdown requested)"
             : "  Window time is up");
+  tone.join();
+  Say("  " + tone_report);
 }
 
 // Step after B7: ReXGlue's own guest memory on the iPad. TitleRuntime::Load with an image that
@@ -284,6 +336,91 @@ void RunWindow(Host &app, int seconds) {
 // (patch 0004's Mach memory entry and its nine views) and creates the kernel, loading no
 // executable. The test then allocates guest memory, writes and reads it, checks that physical
 // memory is visible through its mirror views, and unloads.
+// ReXGlue's own fibers (rex::platform::Fiber, the arm64 switch of patch 0005), the mechanism
+// guest threads use for guest fibers. Runs on a fresh thread: convert it, ping-pong through two
+// fibers, check a floating-point value kept across switches, run a deep call stack in a fiber,
+// time the switches, and destroy everything.
+struct FiberRun {
+  rex::platform::Fiber *main = nullptr, *a = nullptr, *b = nullptr, *deep = nullptr;
+  std::uint64_t count = 0;
+  double kept = 0.0;
+  int deep_result = -1;
+};
+FiberRun g_fibers;
+
+int DeepSum(int n) {
+  volatile char pad[1024];
+  pad[0] = static_cast<char>(n);
+  return n == 0 ? 0 : n + DeepSum(n - 1) + (pad[0] - static_cast<char>(n));
+}
+
+void FiberA(void *) {
+  double value = 1.5;
+  for (;;) {
+    g_fibers.count++;
+    rex::platform::Fiber::SwitchTo(g_fibers.b);
+    value += 1.0;
+    g_fibers.kept = value;
+    value = 1.5;
+  }
+}
+
+void FiberB(void *) {
+  for (;;) {
+    g_fibers.count++;
+    rex::platform::Fiber::SwitchTo(g_fibers.main);
+  }
+}
+
+void FiberDeep(void *) {
+  g_fibers.deep_result = DeepSum(200);
+  for (;;) rex::platform::Fiber::SwitchTo(g_fibers.main);
+}
+
+bool RunFibers() {
+  bool ok = false;
+  std::string report;
+  std::thread worker([&ok, &report] {
+    using rex::platform::Fiber;
+    g_fibers = FiberRun{};
+    g_fibers.main = Fiber::ConvertCurrentThread();
+    g_fibers.a = Fiber::Create(256 << 10, FiberA, nullptr);
+    g_fibers.b = Fiber::Create(256 << 10, FiberB, nullptr);
+    g_fibers.deep = Fiber::Create(1 << 20, FiberDeep, nullptr);
+    if (!g_fibers.main || !g_fibers.a || !g_fibers.b || !g_fibers.deep) {
+      report = "Fibers: could not create the fibers";
+      return;
+    }
+    const bool current_ok = Fiber::GetCurrent() == g_fibers.main;
+    constexpr int kRounds = 100000;
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < kRounds; i++) Fiber::SwitchTo(g_fibers.a);  // main -> a -> b -> main
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    Fiber::SwitchTo(g_fibers.deep);
+    const double ns = std::chrono::duration<double, std::nano>(elapsed).count() / (3.0 * kRounds);
+    const bool count_ok = g_fibers.count == 2ull * kRounds;
+    const bool kept_ok = g_fibers.kept == 2.5;
+    const bool deep_ok = g_fibers.deep_result == 20100;
+    g_fibers.a->Destroy();
+    g_fibers.b->Destroy();
+    g_fibers.deep->Destroy();
+    g_fibers.main->Destroy();
+    char text[300];
+    std::snprintf(text, sizeof text,
+                  "Fibers (ReXGlue rex::platform::Fiber): %d rounds of 3 switches, count %llu "
+                  "(expected %d) %s, float kept %.1f %s, deep stack sum %d %s, current fiber %s, "
+                  "%.1f ns per switch",
+                  kRounds, static_cast<unsigned long long>(g_fibers.count), 2 * kRounds,
+                  count_ok ? "ok" : "WRONG", g_fibers.kept, kept_ok ? "ok" : "WRONG",
+                  g_fibers.deep_result, deep_ok ? "ok" : "WRONG", current_ok ? "ok" : "WRONG", ns);
+    report = text;
+    ok = count_ok && kept_ok && deep_ok && current_ok;
+  });
+  worker.join();
+  Say("  " + report);
+  return ok;
+}
+
 bool RunGuestMemory() {
   static const ::PPCFuncMapping kNoFunctions[] = {{0, nullptr}};
   rex::ppc::PPCImage image{};
@@ -368,11 +505,12 @@ int Run(const std::filesystem::path &root, bool window, int seconds, bool guest_
   std::filesystem::create_directories(root, error);
   Say("  App folder: " + root.string() + (error ? " (could not create: " + error.message() + ")" : ""));
 
-  std::vector<std::string> args = {"--app.root=" + root.string(), "--apu.driver=none"};
+  std::vector<std::string> args = {"--app.root=" + root.string()};
   if (window) {
-    args.push_back("--gpu.driver=vulkan");  // MoltenVK on Metal
+    args.push_back("--gpu.driver=vulkan");  // MoltenVK on Metal; audio stays on its sdl3 default
     TellSDLMainIsReady();
   } else {
+    args.push_back("--apu.driver=none");   // no audio
     args.push_back("--ui.driver=none");    // headless: no window
     args.push_back("--hid.drivers=none");  // no controller
   }
@@ -398,7 +536,9 @@ int Run(const std::filesystem::path &root, bool window, int seconds, bool guest_
       if (guest_memory) {
         const bool memory_ok = RunGuestMemory();
         Say(std::string("  Guest memory test: ") + (memory_ok ? "ok" : "FAILED"));
-        init_ok = init_ok && memory_ok;
+        const bool fibers_ok = RunFibers();
+        Say(std::string("  Fiber test: ") + (fibers_ok ? "ok" : "FAILED"));
+        init_ok = init_ok && memory_ok && fibers_ok;
       }
     }
     Say("  Shutdown: starting");

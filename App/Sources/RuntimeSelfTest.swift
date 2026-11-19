@@ -1,8 +1,12 @@
 import Foundation
 
-/// Runs the N1-b runtime self-tests (SelfTest/*.c) on a background thread.
-/// Each line is written to the log file synchronously before the next step starts, so if a test
-/// crashes the app, shell-log.txt still shows how far it got.
+/// "Run all tests": every N1-b and G1 check in one go, with a pass/fail list on screen.
+///
+/// Order: the platform self-tests (SelfTest/*.c) and the importer self-test on a background
+/// thread, then one ReXGlue start on the main thread (UIKit allows windows only there) that
+/// checks graphics, controller, audio, guest memory, fibers and shutdown. ReXGlue can start once
+/// per launch, so a second run needs the app closed and opened again.
+/// Each line also goes to shell-log.txt synchronously, so a crash still shows how far it got.
 final class RuntimeSelfTest: ObservableObject {
     static let shared = RuntimeSelfTest()
 
@@ -11,89 +15,113 @@ final class RuntimeSelfTest: ObservableObject {
         let text: String
     }
 
+    enum Status: String {
+        case pass = "PASS", fail = "FAIL", skip = "SKIP", expected = "EXPECTED"
+    }
+
+    struct TestResult: Identifiable {
+        let id: Int
+        let name: String
+        let status: Status
+        let detail: String
+    }
+
     @Published private(set) var lines: [Line] = []
+    @Published private(set) var results: [TestResult] = []
     @Published private(set) var running = false
     @Published private(set) var summary = ""
+    @Published private(set) var ranThisLaunch = false
 
     private var nextID = 0
 
     private init() {}
 
-    func run() {
-        guard !running else { return }
+    func runAll() {
+        guard !running, !ranThisLaunch else { return }
         running = true
+        ranThisLaunch = true
         lines = []
-        summary = ""
+        results = []
+        summary = "Running… (the screen goes black for about 15 seconds near the end)"
 
         DispatchQueue.global(qos: .userInitiated).async {
-            RuntimeSelfTest.emit(String(format: "Self-test v9 start. Device %@, app memory available %.2f GB",
+            RuntimeSelfTest.emit(String(format: "Run all tests (shell %@). Device %@, app memory available %.2f GB",
+                                        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
                                         DeviceInfo.machine, DeviceInfo.availableMemoryGB))
             selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
             selftest_set_documents_dir(
                 FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "")
-            setenv("MVK_CONFIG_LOG_LEVEL", "3", 1)  // MoltenVK: errors, warnings and info
+            setenv("MVK_CONFIG_LOG_LEVEL", "2", 1)  // MoltenVK: errors and warnings
             crashlog_redirect_stderr()
-            // Version 3: packaging probe first (ReXGlue libraries and MoltenVK inside the app),
-            // then the version 2 mechanism tests. The two "original" tests show the before/after.
-            let tests: [(String, (selftest_log_fn?) -> Int32)] = [
-                ("ReXGlue libraries in the app", selftest_runtime_libraries),
-                ("Address space", selftest_address_space),
-                ("Memory A: temporary file", selftest_backing_file),
-                ("Memory B: Mach memory entry", selftest_backing_mach_entry),
-                ("Memory C: vm_remap", selftest_backing_vm_remap),
-                ("Fibers: new arm64 switch", selftest_fibers_arm64),
-                ("Original shm_open method (failed before)", selftest_guest_memory),
-                ("Original ucontext fibers (failed before)", selftest_fibers),
-                // Last, because it crashed in vkCreateInstance on 2026-11-18 (shell 0.0.3).
-                ("Vulkan via MoltenVK", selftest_moltenvk),
-                // Version 7 (step B7): the real ReXGlue runtime, started and stopped with no game.
-                ("ReXGlue runtime + guest memory (no game)", selftest_rexglue_headless),
+
+            // The two "original" methods are iPadOS limits the project works around; failing is
+            // the expected result and is shown as such.
+            let tests: [(String, Bool, (selftest_log_fn?) -> Int32)] = [
+                ("ReXGlue libraries load in the app", false, selftest_runtime_libraries),
+                ("Address space for the 4.5 GB guest", false, selftest_address_space),
+                ("Guest memory, temporary-file method", false, selftest_backing_file),
+                ("Guest memory, Mach memory entry (used)", false, selftest_backing_mach_entry),
+                ("Guest memory, vm_remap method", false, selftest_backing_vm_remap),
+                ("arm64 fiber switch (standalone)", false, selftest_fibers_arm64),
+                ("Original shm_open method (iPadOS blocks it)", true, selftest_guest_memory),
+                ("Original ucontext fibers (iPadOS blocks it)", true, selftest_fibers),
+                ("Vulkan on Metal through MoltenVK", false, selftest_moltenvk),
             ]
-            var results: [String] = []
-            for (name, test) in tests {
+            for (name, expectFail, test) in tests {
                 RuntimeSelfTest.emit("— \(name): starting")
                 let passed = test(selfTestLogSink) != 0
-                results.append("\(name) \(passed ? "PASS" : "FAIL")")
+                let status: Status = expectFail ? (passed ? .fail : .expected) : (passed ? .pass : .fail)
+                RuntimeSelfTest.record(name, status, expectFail && !passed ? "fails as expected" : "")
             }
-            let line = String(format: "Self-test end: %@. App memory available %.2f GB",
-                              results.joined(separator: ", "), DeviceInfo.availableMemoryGB)
-            RuntimeSelfTest.emit(line)
+
+            RuntimeSelfTest.emit("— Importer self-test (synthetic folders and disc images): starting")
+            let work = FileManager.default.temporaryDirectory.appendingPathComponent("gamecheck-all")
+            let importerPassed = gamecheck_selftest(work.path, gameCheckLogSink) != 0
+            try? FileManager.default.removeItem(at: work)
+            RuntimeSelfTest.record("Importer checks (fake data)", importerPassed ? .pass : .fail,
+                                   "folders and disc images, 13 cases")
+
+            // ReXGlue on the main thread: window, graphics, controller, audio, memory, fibers.
             DispatchQueue.main.async {
-                RuntimeSelfTest.shared.summary = results.joined(separator: " · ")
-                RuntimeSelfTest.shared.running = false
+                RuntimeSelfTest.emit("— ReXGlue full run (window 15 s; press controller buttons): starting")
+                _ = selftest_rexglue_all(selfTestLogSink, 15)
+                RuntimeSelfTest.finish()
             }
         }
     }
 
-    /// Step B7 part 2: ReXGlue with Vulkan graphics, its own SDL3 window and the controller,
-    /// for 15 seconds, then shut down. UIKit allows windows only on the main thread, so this
-    /// runs there; the shell's screen is covered and frozen until it ends. ReXGlue can start
-    /// once per launch, so this needs a fresh launch without the self-test before it.
-    func runWindowTest() {
-        guard !running else { return }
-        running = true
-        lines = []
-        summary = ""
-        RuntimeSelfTest.emit(String(format: "ReXGlue window test start. Device %@, app memory available %.2f GB",
-                                    DeviceInfo.machine, DeviceInfo.availableMemoryGB))
-        selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
-        selftest_set_documents_dir(
-            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "")
-        setenv("MVK_CONFIG_LOG_LEVEL", "2", 1)  // MoltenVK: errors and warnings
-        crashlog_redirect_stderr()
-        // Let the button's tap finish first, then take over the main thread.
+    private static func finish() {
         DispatchQueue.main.async {
-            let passed = selftest_rexglue_window(selfTestLogSink, 15) != 0
-            let line = String(format: "ReXGlue window test end: %@. App memory available %.2f GB",
-                              passed ? "PASS" : "FAIL", DeviceInfo.availableMemoryGB)
-            RuntimeSelfTest.emit(line)
-            RuntimeSelfTest.shared.summary = "ReXGlue window test \(passed ? "PASS" : "FAIL")"
-            RuntimeSelfTest.shared.running = false
+            let shared = RuntimeSelfTest.shared
+            let passed = shared.results.filter { $0.status == .pass || $0.status == .expected }.count
+            let failed = shared.results.filter { $0.status == .fail }.count
+            let skipped = shared.results.filter { $0.status == .skip }.count
+            shared.summary = "\(passed) passed, \(failed) failed, \(skipped) skipped"
+            shared.running = false
+            ShellLog.shared.writeSync(String(format: "[selftest] Run all tests end: %@. App memory available %.2f GB",
+                                             shared.summary, DeviceInfo.availableMemoryGB))
         }
     }
 
-    /// Writes a line to the log file (synchronously) and to the on-screen list.
+    fileprivate static func record(_ name: String, _ status: Status, _ detail: String) {
+        ShellLog.shared.writeSync("[result] \(status.rawValue) \(name)\(detail.isEmpty ? "" : " — \(detail)")")
+        DispatchQueue.main.async {
+            let shared = RuntimeSelfTest.shared
+            shared.results.append(TestResult(id: shared.nextID, name: name, status: status, detail: detail))
+            shared.nextID += 1
+        }
+    }
+
+    /// Writes a line to the log file (synchronously) and to the on-screen list. Lines of the form
+    /// RESULT|status|name|detail (from the ReXGlue bridge) become entries of the results list.
     static func emit(_ text: String) {
+        if text.hasPrefix("RESULT|") {
+            let parts = text.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false).map(String.init)
+            if parts.count == 4 {
+                record(parts[2], Status(rawValue: parts[1]) ?? .fail, parts[3])
+                return
+            }
+        }
         ShellLog.shared.writeSync("[selftest] \(text)")
         DispatchQueue.main.async {
             let shared = RuntimeSelfTest.shared
@@ -105,6 +133,12 @@ final class RuntimeSelfTest: ObservableObject {
 
 /// C callback handed to the self-tests. Captures nothing, as a C function pointer must.
 private let selfTestLogSink: selftest_log_fn = { cLine in
+    guard let cLine else { return }
+    RuntimeSelfTest.emit(String(cString: cLine))
+}
+
+/// The importer checker's callback, same idea.
+private let gameCheckLogSink: gamecheck_log_fn = { cLine in
     guard let cLine else { return }
     RuntimeSelfTest.emit(String(cString: cLine))
 }

@@ -62,6 +62,11 @@ void Say(std::string_view text) {
   }
 }
 
+// One line per checked item for the app's results list: RESULT|PASS or FAIL or SKIP|name|detail.
+void ReportResult(const char *status, const std::string &name, const std::string &detail) {
+  Say(std::string("RESULT|") + status + "|" + name + "|" + detail);
+}
+
 const char *PhaseName(rex::app::AppPhase phase) {
   switch (phase) {
     case rex::app::AppPhase::kStart: return "start";
@@ -226,7 +231,8 @@ const char *PadTypeName(rex::hid::PadType type) {
 // Plays a quiet 440 Hz tone for about two seconds through ReXGlue's audio system (front left and
 // right), the way a title's audio reaches the device: one planar 6-channel frame of 256 samples
 // at 48 kHz per Submit. Returns a report line.
-std::string PlayTestTone(rex::apu::IAudioSystem &audio) {
+std::string PlayTestTone(rex::apu::IAudioSystem &audio, bool *ok) {
+  *ok = false;
   using rex::apu::kAudioChannelSamples;
   using rex::apu::kAudioFrameSamples;
   using rex::apu::kAudioSampleRate;
@@ -256,6 +262,7 @@ std::string PlayTestTone(rex::apu::IAudioSystem &audio) {
   std::this_thread::sleep_for(std::chrono::milliseconds(150));  // let the queue drain
   const rex::apu::AudioStats stats = audio.GetStats();
   audio.CloseStream(*stream);
+  *ok = submitted == kFrames;
   return "Audio: tone played, " + std::to_string(submitted) + " of " + std::to_string(kFrames) +
          " frames accepted (" + std::to_string(waits) + " waits for a full queue); device " +
          std::to_string(audio.GetOutputChannels()) + " channels; latency " +
@@ -272,7 +279,8 @@ void RunWindow(Host &app, int seconds) {
   Say("  Audio driver: " + audio.GetSettings().driver.Get() + ", " +
       std::to_string(audio.GetOutputChannels()) + " output channels. Playing a 2-second test tone.");
   std::string tone_report;
-  std::thread tone([&audio, &tone_report] { tone_report = PlayTestTone(audio); });
+  bool tone_ok = false;
+  std::thread tone([&audio, &tone_report, &tone_ok] { tone_report = PlayTestTone(audio, &tone_ok); });
   Say("  Running the window for " + std::to_string(seconds) +
       " seconds. Press buttons on the controller now.");
 
@@ -284,6 +292,9 @@ void RunWindow(Host &app, int seconds) {
   std::string last_pad_error;
   std::string last_devices;
   bool ended = false;
+  bool pad_seen = false;
+  int input_changes = 0;
+  std::string pad_name;
   while (Clock::now() - start < std::chrono::seconds(seconds)) {
     if (!app.RunFrame()) {
       ended = true;
@@ -305,6 +316,8 @@ void RunWindow(Host &app, int seconds) {
         std::snprintf(ids, sizeof ids, " %04x:%04x", static_cast<unsigned>(info->vendor),
                       static_cast<unsigned>(info->product));
         devices += std::string("; ReXGlue pad 1: ") + PadTypeName(info->type) + ids;
+        pad_seen = true;
+        pad_name = std::string(PadTypeName(info->type)) + ids;
       } else {
         devices += "; ReXGlue pad 1: " + info.error().GetDescription();
       }
@@ -316,7 +329,13 @@ void RunWindow(Host &app, int seconds) {
       const auto pad = input.GetState(0);
       if (pad) {
         line += "; controller 1: " + PadText(pad->state);
-        if (pad->packet != last_packet) line += " (changed)";
+        if (pad->packet != last_packet) {
+          line += " (changed)";
+          if (last_packet != 0 || pad->state.buttons || pad->state.left_trigger ||
+              pad->state.right_trigger || pad->state.thumb_lx || pad->state.thumb_ly ||
+              pad->state.thumb_rx || pad->state.thumb_ry)
+            input_changes++;
+        }
         last_packet = pad->packet;
       } else if (pad.error().GetDescription() != last_pad_error) {
         last_pad_error = pad.error().GetDescription();
@@ -329,6 +348,19 @@ void RunWindow(Host &app, int seconds) {
             : "  Window time is up");
   tone.join();
   Say("  " + tone_report);
+
+  const bool drawing = graphics.HasDriver() && ui.HasWindow() && loops > 0;
+  ReportResult(drawing ? "PASS" : "FAIL", "Graphics: Vulkan on Metal in a ReXGlue window",
+         std::string(graphics.HasDriver() ? graphics.GetDriverName() : "no driver") + ", window " +
+             (ui.HasWindow() ? "open" : "missing") + ", " + std::to_string(loops) + " frame-loop passes");
+  if (!pad_seen) {
+    ReportResult("SKIP", "Controller input", "no controller connected");
+  } else if (input_changes == 0) {
+    ReportResult("SKIP", "Controller input", pad_name + " connected, but no buttons were pressed");
+  } else {
+    ReportResult("PASS", "Controller input", pad_name + ", " + std::to_string(input_changes) + " input changes read");
+  }
+  ReportResult(tone_ok ? "PASS" : "FAIL", "Audio: test tone through ReXGlue", tone_report);
 }
 
 // Step after B7: ReXGlue's own guest memory on the iPad. TitleRuntime::Load with an image that
@@ -526,24 +558,31 @@ int Run(const std::filesystem::path &root, bool window, int seconds, bool guest_
     const rex::Result<void> init = app.Init(rex::CLIArgList::Parse(args));
     if (!init) {
       Say("  Init FAILED: " + init.error().GetDescription());
+      ReportResult("FAIL", "ReXGlue starts", init.error().GetDescription());
     } else if (rex::app::IsShutdownRequested()) {
       Say("  Init ended early because a shutdown was requested");
     } else {
       init_ok = true;
       Say(std::string("  Init OK, phase: ") + PhaseName(app.GetPhase()) +
           (app.HasUISystem() ? "" : " (no UI system)"));
+      ReportResult("PASS", "ReXGlue starts", "all 8 system modules loaded and initialized");
       if (window) RunWindow(app, seconds);
       if (guest_memory) {
         const bool memory_ok = RunGuestMemory();
         Say(std::string("  Guest memory test: ") + (memory_ok ? "ok" : "FAILED"));
+        ReportResult(memory_ok ? "PASS" : "FAIL", "Guest memory inside ReXGlue",
+               "title and physical memory, mirror view");
         const bool fibers_ok = RunFibers();
         Say(std::string("  Fiber test: ") + (fibers_ok ? "ok" : "FAILED"));
+        ReportResult(fibers_ok ? "PASS" : "FAIL", "Fibers inside ReXGlue", "switches, saved values, deep stack");
         init_ok = init_ok && memory_ok && fibers_ok;
       }
     }
     Say("  Shutdown: starting");
     exit_code = app.Shutdown();
     Say("  Shutdown returned " + std::to_string(exit_code) + ", phase: " + PhaseName(app.GetPhase()));
+    ReportResult(exit_code == 0 ? "PASS" : "FAIL", "ReXGlue shuts down cleanly",
+           "exit code " + std::to_string(exit_code));
   }
   Say("  App object destroyed (modules unloaded)");
   ShowRexLog(root / "logs", window ? 200 : 150);
@@ -584,4 +623,11 @@ extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_window(const
 extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_memory(const char *root,
                                                                             LogFn log) {
   return Guarded(root, log, false, 0, true);
+}
+
+// Everything in one ReXGlue start, on the main thread: window, Vulkan graphics, controller, audio
+// tone, then guest memory and fibers, then shutdown.
+extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_all(const char *root, LogFn log,
+                                                                         int seconds) {
+  return Guarded(root, log, true, seconds, true);
 }

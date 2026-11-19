@@ -10,6 +10,7 @@ struct ContentView: View {
             MetalView(stats: stats)
                 .ignoresSafeArea()
 
+            ScrollView {
             VStack(alignment: .leading, spacing: 6) {
                 Text("NFS MW 2012 iPad — platform test shell")
                     .font(.headline)
@@ -37,23 +38,42 @@ struct ContentView: View {
                         .foregroundStyle(.red)
                 }
                 Divider().frame(width: 360)
-                Button(selfTest.running ? "Runtime self-test running…" : "Run runtime self-test") {
-                    selfTest.run()
+                Button(selfTest.running ? "Testing…" : "Run all tests") {
+                    selfTest.runAll()
                 }
-                .disabled(selfTest.running)
+                .disabled(selfTest.running || selfTest.ranThisLaunch)
                 .buttonStyle(.borderedProminent)
-                Button("Run ReXGlue window test (15 s, fresh launch)") {
-                    selfTest.runWindowTest()
-                }
-                .disabled(selfTest.running)
-                .buttonStyle(.bordered)
+                Text(selfTest.ranThisLaunch && !selfTest.running
+                     ? "To run again, close the app fully and open it."
+                     : "Connect the controller first. Near the end the screen turns black for 15 s: press buttons then. You should hear a short beep.")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 400, alignment: .leading)
                 if !selfTest.summary.isEmpty {
-                    Text(selfTest.summary)
+                    Text(selfTest.summary).bold()
                 }
-                ForEach(selfTest.lines.suffix(28)) { line in
-                    Text(line.text)
-                        .font(.system(.caption, design: .monospaced))
-                        .lineLimit(2)
+                ForEach(selfTest.results) { result in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text(icon(result.status))
+                            .foregroundStyle(color(result.status))
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(result.name)
+                                .font(.system(.caption, design: .monospaced))
+                            if !result.detail.isEmpty {
+                                Text(result.detail)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.7))
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                    .frame(width: 400, alignment: .leading)
+                }
+                if selfTest.running, let last = selfTest.lines.last {
+                    Text(last.text)
+                        .font(.system(.caption2, design: .monospaced))
+                        .lineLimit(1)
+                        .frame(width: 400, alignment: .leading)
                 }
                 Text("Log: Files › On My iPad › NFS MW Shell › shell-log.txt")
                     .font(.caption2)
@@ -62,11 +82,31 @@ struct ContentView: View {
             .foregroundStyle(.white)
             .padding(14)
             .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
-            .padding(24)
+            }
+            .frame(width: 460)
+            .padding(.vertical, 24)
+            .padding(.leading, 24)
 
             GameImportPanel()
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .topTrailing)
+        }
+    }
+
+    private func icon(_ status: RuntimeSelfTest.Status) -> String {
+        switch status {
+        case .pass: return "✓"
+        case .expected: return "✓"
+        case .fail: return "✗"
+        case .skip: return "–"
+        }
+    }
+
+    private func color(_ status: RuntimeSelfTest.Status) -> Color {
+        switch status {
+        case .pass, .expected: return .green
+        case .fail: return .red
+        case .skip: return .yellow
         }
     }
 }

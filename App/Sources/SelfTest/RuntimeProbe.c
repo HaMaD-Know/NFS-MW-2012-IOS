@@ -252,3 +252,12 @@ int selftest_rexglue_window(selftest_log_fn log, int seconds) {
       ok ? "PASS" : "FAIL");
   return ok;
 }
+
+int selftest_rexglue_all(selftest_log_fn log, int seconds) {
+  typedef int (*HostFn)(const char *root, selftest_log_fn log, int seconds);
+  HostFn start = (HostFn)load_host(log, "nfsmw_rexhost_all");
+  if (!start) return 0;
+  char root[1200];
+  snprintf(root, sizeof root, "%s/rexglue", g_documents);
+  return start(root, log, seconds);
+}

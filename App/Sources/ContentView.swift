@@ -63,6 +63,10 @@ struct ContentView: View {
             .padding(14)
             .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
             .padding(24)
+
+            GameImportPanel()
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .topTrailing)
         }
     }
 }

@@ -39,6 +39,12 @@ jobs:
           clang -std=gnu17 -O1 -Wall -Wextra -Wno-unused-parameter -o selftest_host             App/Tests/selftest_host.c App/Sources/SelfTest/*.c
           ./selftest_host
 
+      # The importer's game-data checker, on synthetic folders (no game content).
+      - name: Run importer checks on the macOS runner
+        run: |
+          clang -std=gnu17 -O1 -Wall -Wextra -o gamecheck_host             App/Tests/gamecheck_host.c App/Sources/GameImport/GameCheck.c
+          ./gamecheck_host
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

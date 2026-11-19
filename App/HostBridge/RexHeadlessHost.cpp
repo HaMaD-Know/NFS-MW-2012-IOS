@@ -22,6 +22,7 @@
 #include <rex/kernel/guest_memory.h>
 #include <rex/platform/thread.h>
 #include <rex/kernel/title_paths.h>
+#include <rex/kernel/title_exit.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/ppc/image.h>
 #include <rex/setting.h>
@@ -29,6 +30,13 @@
 #include <rex/ui/ui_system.h>
 
 #include <dlfcn.h>
+
+// The project's own Xbox 360 test program (Tools/make_test_xex.py), recompiled by ReXGlue in CI.
+// Its generated code is compiled into this library only by ipad-runtime-app.yml.
+#if __has_include("testgame_init.h")
+#include "testgame_init.h"
+#define NFSMW_HAVE_TEST_GAME 1
+#endif
 
 #include <algorithm>
 #include <array>
@@ -164,7 +172,13 @@ std::filesystem::path OwnFolder() {
 // SDL on iOS refuses to start unless the program says its main function is ready (normally
 // SDL's own main does this). The shell has its own UIKit main, so tell SDL directly.
 void TellSDLMainIsReady() {
-  const std::filesystem::path sdl = OwnFolder() / "libSDL3d.0.dylib";
+  // libSDL3d.0.dylib in a Debug build of ReXGlue, libSDL3.0.dylib in Release.
+  std::filesystem::path sdl;
+  std::error_code list_error;
+  for (const auto &entry : std::filesystem::directory_iterator(OwnFolder(), list_error)) {
+    const std::string name = entry.path().filename().string();
+    if (name.rfind("libSDL3", 0) == 0 && entry.path().extension() == ".dylib") sdl = entry.path();
+  }
   void *handle = dlopen(sdl.c_str(), RTLD_NOW | RTLD_GLOBAL);
   g_sdl = handle;
   if (!handle) {
@@ -453,6 +467,68 @@ bool RunFibers() {
   return ok;
 }
 
+// Runs the recompiled test program through ReXGlue's real title path: TitleRuntime::Load mounts
+// the app's TestGame folder as game: and loads default.xex (our own, unencrypted), Launch starts
+// its main thread on the recompiled ARM64 code, and the title ends when the code returns. The
+// program sums 1..50,000,000 and stores the result and a marker in guest memory.
+bool RunTestGame(Host &app) {
+#ifndef NFSMW_HAVE_TEST_GAME
+  (void)app;
+  ReportResult("SKIP", "Test game (our own Xbox 360 program)", "not built into this app");
+  return true;
+#else
+  const std::filesystem::path game = OwnFolder().parent_path() / "TestGame";
+  rex::kernel::TitleRuntime title(kPPCImageConfig);
+  if (auto set = title.GetTitlePaths().game_root.SetText(rex::SettingLayer::kTitle, game.string()); !set) {
+    ReportResult("FAIL", "Test game (our own Xbox 360 program)", "game_root: " + set.error().GetDescription());
+    return false;
+  }
+  Say("  Test game: TitleRuntime::Load of TestGame/default.xex");
+  if (auto loaded = title.Load(); !loaded) {
+    ReportResult("FAIL", "Test game (our own Xbox 360 program)", "Load: " + loaded.error().GetDescription());
+    return false;
+  }
+  std::atomic<int> exit_reason{-1};
+  auto guard = title.OnTitleExit([&exit_reason](rex::kernel::TitleExitReason reason) {
+    exit_reason.store(static_cast<int>(reason));
+  });
+  Say("  Test game: Launch (recompiled code runs on the title's main thread)");
+  const auto start = std::chrono::steady_clock::now();
+  if (auto launched = title.Launch(); !launched) {
+    ReportResult("FAIL", "Test game (our own Xbox 360 program)", "Launch: " + launched.error().GetDescription());
+    title.Unload();
+    return false;
+  }
+  while (exit_reason.load() < 0 && std::chrono::steady_clock::now() - start < std::chrono::seconds(20)) {
+    if (!app.RunFrame()) break;
+  }
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  std::uint8_t *base = title.GetMembase().GetBase();
+  std::uint32_t raw_sum = 0, raw_marker = 0;
+  if (base) {
+    std::memcpy(&raw_sum, base + 0x82004000u, 4);
+    std::memcpy(&raw_marker, base + 0x82004004u, 4);
+  }
+  const std::uint32_t sum = __builtin_bswap32(raw_sum);  // the guest stores big-endian
+  const std::uint32_t marker = __builtin_bswap32(raw_marker);
+  constexpr std::uint64_t kN = 50000000ull;
+  const std::uint32_t expected = static_cast<std::uint32_t>(kN * (kN + 1) / 2);
+  const int reason = exit_reason.load();
+  title.Unload();
+  const bool ok = reason == static_cast<int>(rex::kernel::TitleExitReason::kNormalExit) &&
+                  sum == expected && marker == 0x600DF00Du;
+  char text[300];
+  std::snprintf(text, sizeof text,
+                "exit %s, sum %08X (expected %08X), marker %08X, %.3f s for 200 million guest "
+                "instructions (%.0f million per second)",
+                reason < 0 ? "never came" : reason == 0 ? "normal" : "abnormal", sum, expected, marker,
+                seconds, seconds > 0 ? 200.0 / seconds : 0.0);
+  Say(std::string("  Test game: ") + text);
+  ReportResult(ok ? "PASS" : "FAIL", "Test game (our own Xbox 360 program)", text);
+  return ok;
+#endif
+}
+
 bool RunGuestMemory() {
   static const ::PPCFuncMapping kNoFunctions[] = {{0, nullptr}};
   rex::ppc::PPCImage image{};
@@ -572,10 +648,12 @@ int Run(const std::filesystem::path &root, bool window, int seconds, bool guest_
         Say(std::string("  Guest memory test: ") + (memory_ok ? "ok" : "FAILED"));
         ReportResult(memory_ok ? "PASS" : "FAIL", "Guest memory inside ReXGlue",
                "title and physical memory, mirror view");
+        const bool game_ok = RunTestGame(app);
+        Say(std::string("  Test game: ") + (game_ok ? "ok" : "FAILED"));
         const bool fibers_ok = RunFibers();
         Say(std::string("  Fiber test: ") + (fibers_ok ? "ok" : "FAILED"));
         ReportResult(fibers_ok ? "PASS" : "FAIL", "Fibers inside ReXGlue", "switches, saved values, deep stack");
-        init_ok = init_ok && memory_ok && fibers_ok;
+        init_ok = init_ok && memory_ok && fibers_ok && game_ok;
       }
     }
     Say("  Shutdown: starting");

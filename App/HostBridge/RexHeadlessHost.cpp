@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <exception>
 #include <filesystem>
@@ -315,7 +316,9 @@ bool RunGuestMemory() {
   } else {
     const bool stored = memory.Store<std::uint32_t>(*virt + 0x100, kPattern).has_value();
     const auto loaded = memory.Load<std::uint32_t>(*virt + 0x100);
-    const bool host_sees = base && base[*virt + 0x100] != 0;  // big-endian store: first byte C0
+    std::uint32_t raw = 0;
+    if (base) std::memcpy(&raw, base + *virt + 0x100, sizeof raw);
+    const bool host_sees = raw == kPattern;  // Store writes host byte order
     const bool good = stored && loaded && *loaded == kPattern && host_sees;
     std::snprintf(text, sizeof text,
                   "  Title memory: 1 MiB at guest 0x%08X, store/load %08X, host mapping %s -> %s",
@@ -336,13 +339,15 @@ bool RunGuestMemory() {
   } else {
     const std::uint32_t address = *phys + 0x200;
     const bool stored = memory.Store<std::uint32_t>(address, 0x5EEDF00Du).has_value();
+    // GuestMemory::Store copies the value in host byte order, so compare the raw bytes of the
+    // 0xA0000000 view with those of the 0xC0000000 view (shell 0.1.1 wrongly assumed big-endian).
     std::uint32_t mirror_value = 0;
     bool mirror_ok = false;
     if (base && address >= 0xA0000000u && address < 0xC0000000u) {
+      const std::uint8_t *primary = base + address;
       const std::uint8_t *mirror = base + (static_cast<std::uint64_t>(address) - 0xA0000000u + 0xC0000000u);
-      mirror_value = (std::uint32_t(mirror[0]) << 24) | (std::uint32_t(mirror[1]) << 16) |
-                     (std::uint32_t(mirror[2]) << 8) | mirror[3];
-      mirror_ok = mirror_value == 0x5EEDF00Du;
+      std::memcpy(&mirror_value, mirror, sizeof mirror_value);
+      mirror_ok = std::memcmp(primary, mirror, 4) == 0 && mirror_value == 0x5EEDF00Du;
     }
     std::snprintf(text, sizeof text,
                   "  Physical memory: 64 KiB at guest 0x%08X, mirror 0xC0000000 view reads %08X -> %s",

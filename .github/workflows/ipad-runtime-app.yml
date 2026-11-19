@@ -113,6 +113,7 @@ jobs:
           tail -5 "$host"
           rexglue=$(find build-host rexglue-sdk/out -type f -name rexglue -perm -u+x 2>/dev/null | head -1)
           test -n "$rexglue" || { echo "::error::the rexglue recompiler was not built"; exit 1; }
+          rexglue="$PWD/$rexglue"  # absolute: codegen runs from the test program's folder
           echo "Recompiler: $rexglue"
           game="$RUNNER_TEMP/testgame"
           python3 project/Tools/make_test_xex.py "$game"

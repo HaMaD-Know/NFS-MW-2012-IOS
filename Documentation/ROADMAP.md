@@ -38,7 +38,7 @@ Windows compatibility layer.
 
 **Waiting for review.**
 
-## Milestone N1-b — ReXGlue runtime on iPadOS arm64 (no game files) ← current
+## Milestone N1-b — ReXGlue runtime on iPadOS arm64 (no game files) — exit condition met 2026-11-19
 
 *Renumbered 2026-11-17 to match the owner's plan: N1-b is now the iOS runtime port, and the
 owner decisions previously called N1-b move into the N1-c gate.*
@@ -52,6 +52,8 @@ Plan, tasks and device questions: `N1B_IOS_FEASIBILITY.md`. Steps B0–B7:
 - B7: runtime start on the iPad with no game loaded.
 
 Exit: B7 passes on the owner's M2 iPad.
+
+**Status 2026-11-19: exit condition met.** B7 passed on the owner's M2 iPad (shells 0.0.7–0.0.9): ReXGlue starts, runs its Vulkan graphics driver through MoltenVK in its own window, reads an Xbox controller, and shuts down cleanly, with no game. Still open and carried forward: guest memory and fibers inside ReXGlue (they start only with a title), audio, and B6 (simulator tests).
 
 ## Milestone G1 — Import Your Game, without game files (can run alongside N1-b)
 

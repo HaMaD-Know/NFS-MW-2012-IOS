@@ -1,6 +1,6 @@
 # Public Status
 
-Last updated: 2026-11-17.
+Last updated: 2026-11-19.
 
 | Item | State | Evidence |
 |---|---|---|
@@ -20,12 +20,13 @@ Last updated: 2026-11-17.
 | Replacement guest memory on the iPad: A temporary file / B Mach memory entry / C `vm_remap` | **All three PASS on the M2 iPad** (iPadOS 26.6.1, two identical runs): ReXGlue's 4.5 GB nine-view layout, all mirrors consistent, fault handling with resume on a mirrored page (SIGBUS). 256 MB write: A ~5.4–6.2 GB/s, not counted against app memory; B ~15.0–15.2 GB/s and C ~15.3–15.5 GB/s, counted (4.93 → 4.68 GB) | Shell 0.0.2 (run 44135637100), device log 2026-11-18 |
 | Memory-fault handling on the iPad | **PASS** (write and read faults caught, page unprotected, access resumed) | same |
 | arm64 fiber switch on the iPad (replacement for ucontext) | **PASS**: round trips, fiber-to-fiber, ~200 KB stack use, 6.5–6.7 ns per switch | same |
-| These replacements inside ReXGlue on the iPad | **Not tested yet.** The self-test proves the mechanisms on iPadOS, not the patched runtime | — |
+| These replacements inside ReXGlue on the iPad | **Not tested yet.** ReXGlue maps guest memory and starts fibers only when a title loads, and no title has been loaded. The self-test proves the mechanisms on iPadOS, not the patched runtime | — |
 | ReXGlue compiles for iOS with patches 0001–0005 (guest memory via a **Mach memory entry**, arm64 fibers) | **Yes**: 0 errors (earlier tmp-file variant: run 44135637165) | Run 44284348684 |
 | iPad app with the ReXGlue runtime embedded (14 ReXGlue libraries, SDL3, MoltenVK as `libMoltenVK.dylib`, patches 0001–0006) builds in CI | **Yes**: all libraries arm64 + iOS, every `@rpath` dependency present, app 57 MB | Run 44289701605 |
 | Those libraries load on the iPad | **Yes**: 16 of 16 ReXGlue libraries load inside the app, 14 runtime modules answer (shells 0.0.3–0.0.6) | Device logs 2026-11-18 |
 | Vulkan via MoltenVK on the iPad | **PASS (shell 0.0.6, two runs, no crash)**: MoltenVK 1.4.2, `vkCreateInstance` succeeds, device "Apple M2 GPU", Vulkan 1.2, Metal 4 / Apple GPU family 8, 5,461 MB GPU memory available. Fixed by patch 0007 (host allocator passes through to malloc/free on iOS) | Device log 2026-11-18 |
 | ReXGlue runtime starts on the iPad, no game (step B7, part 1) | **PASS (shell 0.0.7)**: ReXGlue's own startup ran headless (no window, audio, input or graphics driver): settings, log file, crash reporter, all eight system modules (filesystem, input, audio, UI, graphics, XAM, XBDM, kernel) loaded from the app, connected and initialized; then a clean shutdown (exit code 0). A second run in the same launch is refused by design | Device log 2026-11-18 |
+| ReXGlue with graphics, window and controller on the iPad, no game (step B7, part 2) | **PASS (shell 0.0.9, no crash)**: ReXGlue's Vulkan graphics driver on the Apple M2 GPU through MoltenVK (Vulkan device created, 2388 × 1668 swapchain in an SDL3 uikit window), the frame loop at about 60–100 passes a second for 15 s, and SDL3 controller input: an Xbox Wireless Controller (045e:02e0) read through ReXGlue's input system with buttons, both triggers (0–255) and both sticks (full range) changing as pressed. Clean shutdown. Needs patch 0008 (SDL3 uikit video driver and Metal layer on iOS). Shell 0.0.8 had crashed after the test in CFPreferences; fixed in 0.0.9 | Device log 2026-11-19 |
 | ReXGlue runtime **runs** on the iPad | **Not attempted.** Compiling for iOS does not show that it runs | — |
 | Analysis of an Xbox 360 executable | Not attempted; requires the user's own copy | — |
 | Bring Your Own Game: import, verification, re-selection | **Designed, not implemented** (`BYOG_DESIGN.md`) | — |

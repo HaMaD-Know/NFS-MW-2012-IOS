@@ -37,7 +37,7 @@ enum gamecheck_state {
   GC_UNSUPPORTED_EDITION,      /**< Right game, but default.xex is not the manifest's executable. */
   GC_INCOMPLETE,               /**< Files missing or not matching the manifest. */
   GC_BAD_MANIFEST,             /**< The manifest could not be read. */
-  GC_DISC_IMAGE_NOT_YET,       /**< An Xbox 360 disc image; images are not supported yet. */
+  GC_DISC_IMAGE_NOT_YET,       /**< An Xbox 360 disc image (gamecheck_probe_image only). */
   GC_NOT_DISC_IMAGE,           /**< A file that is not an Xbox 360 disc image. */
 };
 
@@ -71,6 +71,22 @@ int gamecheck_verify_folder(const char *root, const char *manifest, int full, ga
 
 /** Reports whether a file is an Xbox 360 disc image (XDVDFS). Reads two small blocks. */
 int gamecheck_probe_image(const char *path, gamecheck_log_fn log, gamecheck_report *out);
+
+/**
+ * Checks a plain Xbox 360 disc image (.iso) in place, without extracting it: finds the game
+ * partition, reads the XDVDFS directory tree, then runs the same three phases as for a folder on
+ * the files inside the image. Only reads the image.
+ */
+int gamecheck_verify_image(const char *path, const char *manifest, int full, gamecheck_log_fn log,
+                           gamecheck_report *out);
+
+/**
+ * Writes a small synthetic Xbox 360 disc image (an XDVDFS file system holding the same fake
+ * files as gamecheck_make_test_folder, no game content) and the matching manifest. variant:
+ * 0 complete, 1 one file missing, 2 one file damaged. Returns 1 on success.
+ */
+int gamecheck_make_test_image(const char *path, const char *manifest_path, int variant,
+                              gamecheck_log_fn log);
 
 /**
  * Writes a small synthetic game folder (a fake default.xex header and filler files, no game

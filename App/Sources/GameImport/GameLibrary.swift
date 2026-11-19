@@ -26,6 +26,7 @@ final class GameLibrary: ObservableObject {
     @Published private(set) var testManifestActive = false
 
     private let bookmarkKey = "gameFolderBookmark"
+    private let kindKey = "gameSourceIsImage"  // true: the bookmark is a disc image, not a folder
     private let queue = DispatchQueue(label: "game-import", qos: .userInitiated)
 
     private var documents: URL {
@@ -41,33 +42,27 @@ final class GameLibrary: ObservableObject {
     // MARK: Choosing and restoring
 
     /// Called with the folder the Files picker returned.
-    func choseFolder(_ url: URL) {
+    func choseFolder(_ url: URL) { chose(url, image: false) }
+
+    /// Called with the file the Files picker returned for "Choose Disc Image". The image is read
+    /// in place, never extracted or copied.
+    func choseImage(_ url: URL) { chose(url, image: true) }
+
+    private func chose(_ url: URL, image: Bool) {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
             let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
             UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
-            log("Chose folder \"\(url.lastPathComponent)\" (bookmark saved, used in place)")
+            UserDefaults.standard.set(image, forKey: kindKey)
+            log("Chose \(image ? "disc image" : "folder") \"\(url.lastPathComponent)\" (bookmark saved, used in place)")
         } catch {
-            log("Could not remember the folder: \(error.localizedDescription)")
+            log("Could not remember the \(image ? "disc image" : "folder"): \(error.localizedDescription)")
         }
         verify(url, full: true)
     }
 
-    /// Called with the file the Files picker returned for "Choose Disc Image".
-    func choseImage(_ url: URL) {
-        let access = url.startAccessingSecurityScopedResource()
-        publish(.verifying, title: "Checking disc image…", message: "", details: [])
-        queue.async {
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            var lines: [String] = []
-            var report = gamecheck_report()
-            let state = GameLibrary.collect(into: &lines) { sink in
-                gamecheck_probe_image(url.path, sink, &report)
-            }
-            self.finish(state: state, report: report, lines: lines, name: url.lastPathComponent)
-        }
-    }
+    private var sourceIsImage: Bool { UserDefaults.standard.bool(forKey: kindKey) }
 
     /// At launch: find the remembered folder again and run the quick check.
     func restore() {
@@ -85,7 +80,8 @@ final class GameLibrary: ObservableObject {
     /// Forgets the remembered folder. The user's files are not touched.
     func forget() {
         UserDefaults.standard.removeObject(forKey: bookmarkKey)
-        log("Forgot the game folder (the folder itself was not changed)")
+        UserDefaults.standard.removeObject(forKey: kindKey)
+        log("Forgot the game folder or image (the files themselves were not changed)")
         publish(.noGame, title: "No game chosen",
                 message: "Choose the folder that holds your own copy's default.xex.", details: [])
         DispatchQueue.main.async { self.folderName = "" }
@@ -101,9 +97,9 @@ final class GameLibrary: ObservableObject {
         guard let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil,
                                  bookmarkDataIsStale: &stale),
               FileManager.default.fileExists(atPath: url.path) || startAndCheck(url) else {
-            log("The remembered game folder cannot be found")
+            log("The remembered game \(sourceIsImage ? "disc image" : "folder") cannot be found")
             publish(.needsAttention("missing"), title: "Needs attention",
-                    message: "The game folder you chose before cannot be found. It may have been moved, renamed or deleted, or its drive is not connected. Choose it again.",
+                    message: "The game \(sourceIsImage ? "disc image" : "folder") you chose before cannot be found. It may have been moved, renamed or deleted, or its drive is not connected. Choose it again.",
                     details: [])
             return nil
         }
@@ -125,6 +121,7 @@ final class GameLibrary: ObservableObject {
     private func verify(_ url: URL, full: Bool) {
         let name = url.lastPathComponent
         let manifest = testManifestActive ? testManifest.path : nil
+        let image = sourceIsImage
         publish(.verifying, title: full ? "Verifying…" : "Checking…",
                 message: full ? "Reading every listed file. A full game takes several minutes." : "", details: [])
         log("Verify \"\(name)\" (\(full ? "full" : "quick") check, \(manifest == nil ? "no manifest" : "test manifest"))")
@@ -134,7 +131,8 @@ final class GameLibrary: ObservableObject {
             var lines: [String] = []
             var report = gamecheck_report()
             let state = GameLibrary.collect(into: &lines) { sink in
-                gamecheck_verify_folder(url.path, manifest, full ? 1 : 0, sink, &report)
+                image ? gamecheck_verify_image(url.path, manifest, full ? 1 : 0, sink, &report)
+                      : gamecheck_verify_folder(url.path, manifest, full ? 1 : 0, sink, &report)
             }
             self.finish(state: state, report: report, lines: lines, name: name)
         }
@@ -168,6 +166,20 @@ final class GameLibrary: ObservableObject {
             self.log("Test folder variant \(variant): \(ok ? "written" : "FAILED") at Documents/ImportTest/Game")
             self.refreshTestManifest()
             self.publishDetails(["Test folder written (variant \(variant)). Choose it with Choose Game Folder: Files › On My iPad › NFS MW Shell (inside LiveContainer: LiveContainer › Data › …) › ImportTest › Game"])
+        }
+    }
+
+    /// Writes the synthetic disc image Documents/ImportTest/Game.iso (an Xbox 360 file system
+    /// with fake files, no game content) and its test manifest. variant: 0 complete, 1 missing
+    /// file, 2 damaged file.
+    func makeTestImage(variant: Int32) {
+        let image = testRoot.appendingPathComponent("Game.iso")
+        try? FileManager.default.createDirectory(at: testRoot, withIntermediateDirectories: true)
+        queue.async {
+            let ok = gamecheck_make_test_image(image.path, self.testManifest.path, variant, nil) != 0
+            self.log("Test disc image variant \(variant): \(ok ? "written" : "FAILED") at Documents/ImportTest/Game.iso")
+            self.refreshTestManifest()
+            self.publishDetails(["Test disc image written (variant \(variant)). Choose it with Choose Disc Image: … › ImportTest › Game.iso"])
         }
     }
 

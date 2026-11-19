@@ -55,11 +55,16 @@ struct GameImportPanel: View {
                 .font(.caption)
             HStack {
                 Button("Importer self-test") { library.runSelfTest() }
-                Menu("Make test folder") {
+                Menu("Make test data") {
                     Button("Complete") { library.makeTestFolder(variant: 0) }
                     Button("One file missing") { library.makeTestFolder(variant: 1) }
                     Button("One file damaged") { library.makeTestFolder(variant: 2) }
                     Button("A different game") { library.makeTestFolder(variant: 3) }
+                    Divider()
+                    Button("Disc image: complete") { library.makeTestImage(variant: 0) }
+                    Button("Disc image: one file missing") { library.makeTestImage(variant: 1) }
+                    Button("Disc image: one file damaged") { library.makeTestImage(variant: 2) }
+                    Divider()
                     Button("Remove test data", role: .destructive) { library.removeTestData() }
                 }
             }

@@ -96,12 +96,21 @@ jobs:
       # recompiled by ReXGlue's recompiler built for this Mac, exactly as a game would be.
       - name: Recompile the test program with ReXGlue
         run: |
-          set -o pipefail
-          cmake -S rexglue-sdk -B build-host -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
-            -DCMAKE_CXX_STANDARD=23 -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_ENABLE_TRACY=OFF \
-            -DREXGLUE_VMA_INCLUDE_DIR="$VMA_INC" 2>&1 | tail -5
-          cmake --build build-host --parallel 2>&1 | tail -5
+          report() {  # logs need a sign-in; annotations do not
+            { grep -E 'error|Error|FAILED|undefined' "$1" || tail -40 "$1"; } | head -50 > "$1.err"
+            split -b 3500 "$1.err" "$1.part-"; n=0
+            for part in "$1".part-*; do n=$((n+1))
+              echo "::error title=$2 part $n::$(sed -e 's/%/%25/g' "$part" | awk 'BEGIN{ORS="%0A"} {print}')"
+            done
+          }
+          host="$RUNNER_TEMP/host-build.txt"
+          if ! { cmake -S rexglue-sdk -B build-host -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                   -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+                   -DCMAKE_CXX_STANDARD=23 -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_ENABLE_TRACY=OFF \
+                   -DREXGLUE_VMA_INCLUDE_DIR="$VMA_INC" && cmake --build build-host --parallel; } > "$host" 2>&1; then
+            tail -60 "$host"; report "$host" "Recompiler build for the Mac"; exit 1
+          fi
+          tail -5 "$host"
           rexglue=$(find build-host rexglue-sdk/out -type f -name rexglue -perm -u+x 2>/dev/null | head -1)
           test -n "$rexglue" || { echo "::error::the rexglue recompiler was not built"; exit 1; }
           echo "Recompiler: $rexglue"

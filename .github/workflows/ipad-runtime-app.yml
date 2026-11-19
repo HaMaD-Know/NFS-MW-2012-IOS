@@ -22,6 +22,8 @@ env:
 
 jobs:
   build:
+    # GitHub's Apple-silicon Mac runners are sometimes short on capacity; a job that no runner
+    # picks up is cancelled ("not acquired by Runner"). Push again or re-run when that happens.
     runs-on: macos-26
     timeout-minutes: 180
     defaults:

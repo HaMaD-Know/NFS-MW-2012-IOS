@@ -80,7 +80,9 @@ def pe_image() -> bytes:
         struct.pack_into("<I", image, at + 36, flags)
         at += 40
     # .pdata: one function at the entry point, length in instructions (big-endian, as the guest).
-    struct.pack_into(">II", image, PDATA_OFFSET, LOAD_ADDRESS + TEXT_OFFSET, len(CODE) << 8)
+    # Bits 30-31 are the entry type: 1 = a normal function without an exception handler
+    # (0 would mark a register-save millicode helper; see ReXGlue tests/code_image.h).
+    struct.pack_into(">II", image, PDATA_OFFSET, LOAD_ADDRESS + TEXT_OFFSET, (len(CODE) << 8) | (1 << 30))
     # .text: the program (big-endian).
     for i, word in enumerate(CODE):
         struct.pack_into(">I", image, TEXT_OFFSET + 4 * i, word)

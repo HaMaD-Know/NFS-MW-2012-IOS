@@ -1,0 +1,62 @@
+diff --git a/src/kernel/xam/xam_forwards.cpp b/src/kernel/xam/xam_forwards.cpp
+index d355e7f..9a85465 100644
+--- a/src/kernel/xam/xam_forwards.cpp
++++ b/src/kernel/xam/xam_forwards.cpp
+@@ -136,6 +136,7 @@ REX_XAM_FORWARD(__imp__XamFree)
+ REX_XAM_FORWARD(__imp__XamGetCountryFromOnlineCountry)
+ REX_XAM_FORWARD(__imp__XamGetCountryString)
+ REX_XAM_FORWARD(__imp__XamGetCurrentTitleId)
++REX_XAM_FORWARD(__imp__XNetLogonGetTitleID)  // iOS patch 0011
+ REX_XAM_FORWARD(__imp__XamGetExecutionId)
+ REX_XAM_FORWARD(__imp__XamGetLanguageFromOnlineLanguage)
+ REX_XAM_FORWARD(__imp__XamGetLanguageLocaleString)
+diff --git a/src/kernel/xam/xam_stub.cpp b/src/kernel/xam/xam_stub.cpp
+index 3779451..28be3c2 100644
+--- a/src/kernel/xam/xam_stub.cpp
++++ b/src/kernel/xam/xam_stub.cpp
+@@ -241,7 +241,7 @@ REX_EXPORT_STUB(__imp__XNetLogonGetServiceInfo);
+ REX_EXPORT_STUB(__imp__XNetLogonGetServiceNetworkID);
+ REX_EXPORT_STUB(__imp__XNetLogonGetState);
+ REX_EXPORT_STUB(__imp__XNetLogonGetTicketOpt);
+-REX_EXPORT_STUB(__imp__XNetLogonGetTitleID);
++// iOS patch 0011: XNetLogonGetTitleID forwards to xam (xam_info.cpp), see there.
+ REX_EXPORT_STUB(__imp__XNetLogonGetTitleVersion);
+ REX_EXPORT_STUB(__imp__XNetLogonGetUserPrivileges);
+ REX_EXPORT_STUB(__imp__XNetLogonInitOverrideInfo);
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_crypt.cpp b/src/kernel/xboxkrnl/xboxkrnl_crypt.cpp
+index e9bdf11..1d95866 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_crypt.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_crypt.cpp
+@@ -1272,9 +1272,14 @@ u32 XeKeysHmacShaUsingKey_entry(MappedVoid obscured_key, MappedVoid inp_1, u32 i
+ }
+ 
+ u32 XeKeysConsolePrivateKeySign_entry([[maybe_unused]] MappedVoid hash,
+-                                      [[maybe_unused]] MappedVoid signature) {
+-  REX_KERNEL_STUB("XeKeysConsolePrivateKeySign");
+-  return 0;
++                                      MappedVoid signature) {
++  // iOS patch 0011: there is no console key to sign with. Report success with an empty
++  // certificate and signature (XE_CONSOLE_SIGNATURE, 0x228 bytes), as Xenia does, instead of
++  // failing: NFS Most Wanted 2012 retried the failed call several times a second.
++  if (signature) {
++    std::memset(signature.As<u8*>(), 0, 0x228);
++  }
++  return 1;
+ }
+ 
+ u32 XeKeysConsoleSignatureVerification_entry([[maybe_unused]] MappedVoid hash,
+diff --git a/src/xam/xam_info.cpp b/src/xam/xam_info.cpp
+index 56af9fd..f0cac18 100644
+--- a/src/xam/xam_info.cpp
++++ b/src/xam/xam_info.cpp
+@@ -436,6 +436,10 @@ REX_XAM_BODY(__imp__XGetAVPack, rex::xam::XGetAVPack_entry)
+ REX_XAM_BODY(__imp__XGetGameRegion, rex::xam::XGetGameRegion_entry)
+ REX_XAM_BODY(__imp__XGetLanguage, rex::xam::XGetLanguage_entry)
+ REX_XAM_BODY(__imp__XamGetCurrentTitleId, rex::xam::XamGetCurrentTitleId_entry)
++// iOS patch 0011: XNetLogonGetTitleID was a stub that set no return value, so a title got its
++// own first argument back (NFS Most Wanted 2012 then read through a null pointer at its press
++// start screen). On a console it returns the title ID of the running title.
++REX_XAM_BODY(__imp__XNetLogonGetTitleID, rex::xam::XamGetCurrentTitleId_entry)
+ REX_XAM_BODY(__imp__XamGetExecutionId, rex::xam::XamGetExecutionId_entry)
+ REX_XAM_BODY(__imp__XamLoaderSetLaunchData, rex::xam::XamLoaderSetLaunchData_entry)
+ REX_XAM_BODY(__imp__XamLoaderGetLaunchDataSize, rex::xam::XamLoaderGetLaunchDataSize_entry)

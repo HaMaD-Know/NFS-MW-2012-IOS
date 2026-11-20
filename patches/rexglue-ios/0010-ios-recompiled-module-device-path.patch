@@ -1,0 +1,25 @@
+diff --git a/src/kernel/module_registry.cpp b/src/kernel/module_registry.cpp
+index 5a72e84..2851b21 100644
+--- a/src/kernel/module_registry.cpp
++++ b/src/kernel/module_registry.cpp
+@@ -626,6 +626,20 @@ std::optional<ModuleRegistry::RecompiledModule> ModuleRegistry::FindRecompiledMo
+       return info;
+     }
+   }
++  // iOS patch 0010: a module loaded by its device path (LoadUserModule joins the executable's
++  // folder, Device/Harddisk0/Partition1, with the name) normalizes to
++  // "device/harddisk0/partition1/a.xex", while the manifest's guest_path (game: then a.xex)
++  // normalizes to "a.xex". The manifest reference says the match ignores the device, so accept
++  // a registered path that the requested one ends with at a folder boundary.
++  for (const auto& info : recompiled_modules_) {
++    if (!info.guest_path.empty() && normalized.size() > info.guest_path.size() &&
++        normalized.ends_with(info.guest_path) &&
++        normalized[normalized.size() - info.guest_path.size() - 1] == '/') {
++      REXSYS_DEBUG("Recompiled module '{}' matched '{}' ignoring the device", info.guest_path,
++                   normalized);
++      return info;
++    }
++  }
+   return std::nullopt;
+ }
+ 

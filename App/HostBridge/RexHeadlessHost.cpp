@@ -47,6 +47,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <thread>
 #include <atomic>
@@ -790,6 +791,37 @@ bool PlayGame(Host &app, const std::filesystem::path &iso, const std::filesystem
     title.Unload();
     return false;
   }
+  // ReXGlue resolves a path with the FIRST mount (in mount order) whose path starts it. Load
+  // mounted the game partition before \Device\Harddisk0 (a null mount with Partition0, Cache0,
+  // Cache1); the disc image is now last, so \Device\Harddisk0 would answer for the game
+  // partition's files (shell 0.1.9: "File \Device\Harddisk0\Partition1\HAWAII.XEX.DLL was not
+  // found"). Mount every such broader mount again, so it comes after the disc image.
+  auto covers = [](const std::string &outer, const std::string &inner) {
+    if (outer.size() >= inner.size() || inner[outer.size()] != '\\') return false;
+    for (size_t i = 0; i < outer.size(); ++i) {
+      if (std::tolower(static_cast<unsigned char>(outer[i])) !=
+          std::tolower(static_cast<unsigned char>(inner[i])))
+        return false;
+    }
+    return true;
+  };
+  for (const rex::filesystem::MountEntry &entry : files.GetMounts()) {
+    if (!covers(entry.path, partition)) continue;
+    if (auto removed = files.Unmount(entry.path); !removed) {
+      Say("  Play: could not move the mount " + entry.path + ": " + removed.error().GetDescription());
+      continue;
+    }
+    if (auto again = files.Mount(entry); !again) {
+      Say("  Play: could not mount " + entry.path + " again: " + again.error().GetDescription());
+    } else {
+      Say("  Play: moved the mount " + entry.path + " behind the disc image");
+    }
+  }
+  std::string order;
+  for (const rex::filesystem::MountEntry &entry : files.GetMounts()) {
+    order += (order.empty() ? "" : ", ") + entry.path;
+  }
+  Say("  Play: mounts in order: " + order);
   Say("  Play: game: now reads the disc image " + iso.filename().string());
   std::atomic<int> exit_reason{-1};
   auto guard = title.OnTitleExit([&exit_reason](rex::kernel::TitleExitReason reason) {

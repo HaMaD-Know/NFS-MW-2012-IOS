@@ -73,7 +73,8 @@ jobs:
           VMA_SHA256: 90ce12fc4a2466235a09ae02905dd0c13aee80c1bbf11b331ab61230c2ceb112
         run: |
           inc="$RUNNER_TEMP/vma/include"; mkdir -p "$inc"
-          curl -fsSL -o "$inc/vk_mem_alloc.h" \
+          # Retries: private run #14 failed here once on a network error (curl exit 56).
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$inc/vk_mem_alloc.h" \
             "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/${VMA_REF}/include/vk_mem_alloc.h"
           echo "${VMA_SHA256}  $inc/vk_mem_alloc.h" | shasum -a 256 -c -
           echo "VMA_INC=$inc" >> "$GITHUB_ENV"

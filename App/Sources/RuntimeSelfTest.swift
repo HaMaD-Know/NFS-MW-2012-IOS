@@ -79,7 +79,7 @@ final class RuntimeSelfTest: ObservableObject {
             let importerPassed = gamecheck_selftest(work.path, gameCheckLogSink) != 0
             try? FileManager.default.removeItem(at: work)
             RuntimeSelfTest.record("Importer checks (fake data)", importerPassed ? .pass : .fail,
-                                   "folders and disc images, 13 cases")
+                                   "folders and disc images, 13 cases, export, file list")
 
             // ReXGlue on the main thread: window, graphics, controller, audio, memory, fibers.
             DispatchQueue.main.async {

@@ -51,6 +51,16 @@ struct GameImportPanel: View {
             .disabled(library.busy)
 
             Divider()
+            Text("For the private build (uses the chosen folder or disc image)")
+                .font(.caption)
+            HStack {
+                Button("Export main file") { library.exportMainFile() }
+                Button("Make file list") { library.makeFileList() }
+            }
+            .buttonStyle(.bordered)
+            .disabled(library.busy)
+
+            Divider()
             Text("Testing (synthetic data, no game content)\(library.testManifestActive ? " — test manifest ON" : "")")
                 .font(.caption)
             HStack {

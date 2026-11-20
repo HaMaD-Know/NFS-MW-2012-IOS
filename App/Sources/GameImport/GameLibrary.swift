@@ -154,6 +154,63 @@ final class GameLibrary: ObservableObject {
         DispatchQueue.main.async { self.folderName = name }
     }
 
+    // MARK: Export for the private build
+
+    /// Documents/Export, visible in the Files app, where the exported file and the file list go.
+    private var exportFolder: URL { documents.appendingPathComponent("Export", isDirectory: true) }
+
+    /// Copies only default.xex out of the chosen game folder or disc image into Documents/Export,
+    /// for the owner's private build. Nothing else is copied and nothing is uploaded by the app.
+    func exportMainFile() {
+        refreshTestManifest()
+        guard let url = resolveBookmark() else { return }
+        let image = sourceIsImage
+        let destination = exportFolder.appendingPathComponent("default.xex")
+        try? FileManager.default.createDirectory(at: exportFolder, withIntermediateDirectories: true)
+        publish(.verifying, title: "Exporting default.xex…", message: "", details: [])
+        log("Export default.xex from \"\(url.lastPathComponent)\"")
+        queue.async {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            var lines: [String] = []
+            let ok = GameLibrary.collect(into: &lines) { sink in
+                gamecheck_export_file(url.path, image ? 1 : 0, "default.xex", destination.path, sink)
+            } != 0
+            for line in lines { self.log(line) }
+            self.publish(.noGame, title: ok ? "✓ default.xex exported" : "✗ Export failed",
+                         message: ok ? "Saved in Files › NFS MW Shell › Export › default.xex. Upload only this file to your private GitHub project, then delete it here."
+                                     : "The file could not be copied. See the details.",
+                         details: lines)
+        }
+    }
+
+    /// Writes the file list (names, sizes and SHA-256 fingerprints, no contents) of the chosen
+    /// game folder or disc image into Documents/Export/file-list.txt. Reads every file once.
+    func makeFileList() {
+        refreshTestManifest()
+        guard let url = resolveBookmark() else { return }
+        let image = sourceIsImage
+        let destination = exportFolder.appendingPathComponent("file-list.txt")
+        try? FileManager.default.createDirectory(at: exportFolder, withIntermediateDirectories: true)
+        publish(.verifying, title: "Making the file list…",
+                message: "Reading every game file once. A full game takes several minutes; keep the app open.",
+                details: [])
+        log("File list of \"\(url.lastPathComponent)\"")
+        queue.async {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            var lines: [String] = []
+            let ok = GameLibrary.collect(into: &lines) { sink in
+                gamecheck_write_manifest(url.path, image ? 1 : 0, destination.path, sink)
+            } != 0
+            for line in lines { self.log(line) }
+            self.publish(.noGame, title: ok ? "✓ File list made" : "✗ File list failed",
+                         message: ok ? "Saved in Files › NFS MW Shell › Export › file-list.txt. It holds only names, sizes and fingerprints, no game content. Send it to the project."
+                                     : "See the details.",
+                         details: Array(lines.suffix(20)))
+        }
+    }
+
     // MARK: Test data
 
     /// Writes the synthetic test folder Documents/ImportTest/Game (no game content) and its test

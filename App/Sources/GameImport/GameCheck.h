@@ -81,6 +81,20 @@ int gamecheck_verify_image(const char *path, const char *manifest, int full, gam
                            gamecheck_report *out);
 
 /**
+ * Copies one file (for example "default.xex") out of a game folder or a disc image to
+ * destination. Only that file is copied. Returns 1 on success.
+ */
+int gamecheck_export_file(const char *path, int is_image, const char *relative, const char *destination,
+                          gamecheck_log_fn log);
+
+/**
+ * Writes the file list (manifest) of a game folder or disc image: default.xex's title ID, media ID,
+ * version and SHA-256, then every file with its SHA-256, size and path. No file contents. Reads
+ * every file once, so a full game takes several minutes. Returns 1 on success.
+ */
+int gamecheck_write_manifest(const char *path, int is_image, const char *destination, gamecheck_log_fn log);
+
+/**
  * Writes a small synthetic Xbox 360 disc image (an XDVDFS file system holding the same fake
  * files as gamecheck_make_test_folder, no game content) and the matching manifest. variant:
  * 0 complete, 1 one file missing, 2 one file damaged. Returns 1 on success.

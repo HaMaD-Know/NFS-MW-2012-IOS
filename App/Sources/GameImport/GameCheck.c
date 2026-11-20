@@ -492,6 +492,164 @@ int gamecheck_probe_image(const char *path, gamecheck_log_fn log, gamecheck_repo
   return out->state = GC_DISC_IMAGE_NOT_YET;
 }
 
+// --- Export and file list ----------------------------------------------------------------------
+
+// Folder listing for nftw, which takes no context argument (checker calls run on one thread).
+static source *g_walk_source;
+static size_t g_walk_root_length;
+static int g_walk_ok;
+
+static int list_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw) {
+  (void)ftw;
+  if (flag == FTW_F && S_ISREG(st->st_mode) && strlen(path) > g_walk_root_length + 1) {
+    if (!add_image_file(g_walk_source, path + g_walk_root_length + 1, 0, st->st_size)) g_walk_ok = 0;
+  }
+  return g_walk_ok ? 0 : 1;
+}
+
+// Opens a folder or a disc image and lists every file in it.
+static int open_source(const char *path, int is_image, source *src, gamecheck_log_fn log) {
+  memset(src, 0, sizeof *src);
+  src->fd = -1;
+  if (!is_image) {
+    src->root = path;
+    g_walk_source = src;
+    g_walk_root_length = strlen(path);
+    while (g_walk_root_length > 1 && path[g_walk_root_length - 1] == '/') g_walk_root_length--;
+    g_walk_ok = 1;
+    if (nftw(path, list_entry, 16, FTW_PHYS) != 0 || !g_walk_ok) {
+      say(log, "Folder: could not be listed completely (%d files so far)", src->count);
+      return 0;
+    }
+    say(log, "Folder: %d files listed", src->count);
+    return 1;
+  }
+  src->is_image = 1;
+  src->fd = open(path, O_RDONLY);
+  if (src->fd < 0) {
+    say(log, "Disc image: cannot open (%s)", strerror(errno));
+    return 0;
+  }
+  const long long partition = find_partition(src->fd);
+  unsigned char descriptor[0x20];
+  if (partition < 0 ||
+      pread(src->fd, descriptor, sizeof descriptor, partition + 32 * SECTOR) != (ssize_t)sizeof descriptor) {
+    say(log, "Disc image: not an Xbox 360 disc image");
+    return 0;
+  }
+  if (!walk_directory(src, partition, le32(descriptor + 0x14), le32(descriptor + 0x18), "", 0)) {
+    say(log, "Disc image: the directory could not be read completely (%d files so far)", src->count);
+    return 0;
+  }
+  say(log, "Disc image: %d files listed", src->count);
+  return 1;
+}
+
+int gamecheck_export_file(const char *path, int is_image, const char *relative, const char *destination,
+                          gamecheck_log_fn log) {
+  source src;
+  int ok = 0;
+  if (open_source(path, is_image, &src, log)) {
+    int fd, owned;
+    long long offset, size;
+    if (!source_open(&src, relative, &fd, &owned, &offset, &size)) {
+      say(log, "Export: %s not found", relative);
+    } else {
+      const int out = open(destination, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (out < 0) {
+        say(log, "Export: cannot create the copy (%s)", strerror(errno));
+      } else {
+        static unsigned char buffer[1 << 20];
+        long long done = 0;
+        ok = 1;
+        while (ok && done < size) {
+          const size_t want = size - done < (long long)sizeof buffer ? (size_t)(size - done) : sizeof buffer;
+          const ssize_t n = pread(fd, buffer, want, offset + done);
+          ok = n > 0 && write(out, buffer, (size_t)n) == n;
+          if (ok) done += n;
+        }
+        ok = close(out) == 0 && ok;
+        if (ok) {
+          char hash[65];
+          const int hashed = sha256_file(destination, hash);
+          say(log, "Export: %s copied (%lld bytes, SHA-256 %s)", relative, size, hashed ? hash : "?");
+        } else {
+          say(log, "Export: copying %s failed", relative);
+          unlink(destination);
+        }
+      }
+      if (owned) close(fd);
+    }
+  }
+  free_source(&src);
+  return ok;
+}
+
+static int compare_files(const void *a, const void *b) {
+  return strcasecmp(((const image_file *)a)->path, ((const image_file *)b)->path);
+}
+
+int gamecheck_write_manifest(const char *path, int is_image, const char *destination, gamecheck_log_fn log) {
+  source src;
+  int ok = 0;
+  FILE *out = NULL;
+  if (!open_source(path, is_image, &src, log)) goto done;
+  qsort(src.files, (size_t)src.count, sizeof src.files[0], compare_files);
+
+  // Header from default.xex: identity and SHA-256.
+  gamecheck_report identity;
+  memset(&identity, 0, sizeof identity);
+  int fd, owned;
+  long long offset, size;
+  if (!source_open(&src, "default.xex", &fd, &owned, &offset, &size)) {
+    say(log, "File list: default.xex not found");
+    goto done;
+  }
+  const int known = read_xex_identity(fd, offset, &identity) &&
+                    sha256_range(fd, offset, size, identity.xex_sha256);
+  if (owned) close(fd);
+  if (!known) {
+    say(log, "File list: default.xex is not a readable XEX2 file");
+    goto done;
+  }
+  char version[32];
+  version_text(identity.version, version, sizeof version);
+  out = fopen(destination, "w");
+  if (!out) {
+    say(log, "File list: cannot create the file (%s)", strerror(errno));
+    goto done;
+  }
+  fprintf(out, "# nfsmw-manifest 1\n");
+  fprintf(out, "edition %08X-%s Title %08X, media ID %08X, version %s\n", identity.media_id, version,
+          identity.title_id, identity.media_id, version);
+  fprintf(out, "title %08X\nxex-sha256 %s\n", identity.title_id, identity.xex_sha256);
+  long long total = 0;
+  ok = 1;
+  for (int i = 0; i < src.count && ok; i++) {
+    char hash[65];
+    if (!source_open(&src, src.files[i].path, &fd, &owned, &offset, &size)) {
+      ok = 0;
+      break;
+    }
+    ok = sha256_range(fd, offset, size, hash);
+    if (owned) close(fd);
+    if (!ok) {
+      say(log, "File list: %s could not be read", src.files[i].path);
+      break;
+    }
+    fprintf(out, "file %s %lld %s\n", hash, size, src.files[i].path);
+    total += size;
+    if ((i + 1) % 100 == 0) say(log, "File list: %d of %d files", i + 1, src.count);
+  }
+  if (ok) say(log, "File list: %d files, %.2f GB, title %08X, media ID %08X, version %s", src.count,
+              (double)total / 1073741824.0, identity.title_id, identity.media_id, version);
+done:
+  if (out && fclose(out) != 0) ok = 0;
+  if (!ok && out) unlink(destination);
+  free_source(&src);
+  return ok;
+}
+
 // --- Synthetic test data (no game content) ------------------------------------------------------
 
 static int remove_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw) {
@@ -754,6 +912,30 @@ int gamecheck_selftest(const char *work_dir, gamecheck_log_fn log) {
     say(log, "       \"%s\"", report.message);
   }
 
+  // Export and file list on the complete test image.
+  char exported[1024], listed[1024];
+  snprintf(exported, sizeof exported, "%s/exported.xex", work_dir);
+  snprintf(listed, sizeof listed, "%s/listed.txt", work_dir);
+  int tools_ok = gamecheck_make_test_image(image, manifest, 0, log) &&
+                 gamecheck_export_file(image, 1, "default.xex", exported, NULL);
+  if (tools_ok) {
+    unsigned char xex[FAKE_XEX_SIZE];
+    char want[65], got[65];
+    fake_xex(xex, GAMECHECK_TITLE_ID, 0x7E57DA7A);
+    sha256_memory(xex, sizeof xex, want);
+    tools_ok = sha256_file(exported, got) && strcmp(want, got) == 0;
+  }
+  say(log, "  %s export default.xex from a disc image", tools_ok ? "ok  " : "FAIL");
+  int list_ok = gamecheck_write_manifest(image, 1, listed, NULL);
+  if (list_ok) {
+    gamecheck_report listed_report;
+    list_ok = gamecheck_verify_image(image, listed, 1, NULL, &listed_report) == GC_VERIFIED &&
+              listed_report.files_listed == TEST_FILE_COUNT + 1;
+  }
+  say(log, "  %s file list of a disc image, then verified against it", list_ok ? "ok  " : "FAIL");
+  remove(exported);
+  remove(listed);
+
   // A file that is not a disc image.
   unsigned char junk[4096];
   memset(junk, 0x5A, sizeof junk);
@@ -765,8 +947,9 @@ int gamecheck_selftest(const char *work_dir, gamecheck_log_fn log) {
   remove_tree(root);
   remove(manifest);
 
-  const int all = passed == total && junk_ok;
-  say(log, "%s: importer checks %d of %d correct, non-image rejected %s", all ? "PASS" : "FAIL",
-      passed, total, junk_ok ? "yes" : "no");
+  const int all = passed == total && junk_ok && tools_ok && list_ok;
+  say(log, "%s: importer checks %d of %d correct, non-image rejected %s, export %s, file list %s",
+      all ? "PASS" : "FAIL", passed, total, junk_ok ? "yes" : "no", tools_ok ? "ok" : "FAILED",
+      list_ok ? "ok" : "FAILED");
   return all;
 }

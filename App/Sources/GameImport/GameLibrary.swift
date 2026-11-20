@@ -207,7 +207,7 @@ final class GameLibrary: ObservableObject {
             self.publish(.noGame, title: ok ? "✓ File list made" : "✗ File list failed",
                          message: ok ? "Saved in Files › NFS MW Shell › Export › file-list.txt. It holds only names, sizes and fingerprints, no game content. Send it to the project."
                                      : "See the details.",
-                         details: Array(lines.suffix(20)))
+                         details: lines.filter { $0.hasPrefix("Code file") || $0.hasPrefix("Large file") || $0.hasPrefix("File list:") }.suffix(60).map { $0 })
         }
     }
 

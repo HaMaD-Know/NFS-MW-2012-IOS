@@ -643,6 +643,35 @@ int gamecheck_write_manifest(const char *path, int is_image, const char *destina
   }
   if (ok) say(log, "File list: %d files, %.2f GB, title %08X, media ID %08X, version %s", src.count,
               (double)total / 1073741824.0, identity.title_id, identity.media_id, version);
+  // Code files of the game itself (not the console's $SystemUpdate): default.xex may only be a
+  // launcher that loads the real game code from one of these.
+  if (ok) {
+    static const char *const kCodeEndings[] = {".xex", ".xexp", ".exe", ".dll", ".elf"};
+    int shown = 0;
+    for (int i = 0; i < src.count && shown < 40; i++) {
+      const char *name = src.files[i].path;
+      if (strncasecmp(name, "$SystemUpdate", 13) == 0) continue;
+      const char *dot = strrchr(name, '.');
+      for (size_t e = 0; dot && e < sizeof kCodeEndings / sizeof kCodeEndings[0]; e++) {
+        if (strcasecmp(dot, kCodeEndings[e]) == 0) {
+          say(log, "Code file: %s (%lld bytes)", name, src.files[i].size);
+          shown++;
+          break;
+        }
+      }
+    }
+    // The ten largest files, whatever their names (the game code may have another ending).
+    for (int pass = 0; pass < 10; pass++) {
+      int best = -1;
+      for (int i = 0; i < src.count; i++) {
+        if (src.files[i].offset == -1) continue;
+        if (best < 0 || src.files[i].size > src.files[best].size) best = i;
+      }
+      if (best < 0) break;
+      say(log, "Large file: %s (%.1f MB)", src.files[best].path, (double)src.files[best].size / 1048576.0);
+      src.files[best].offset = -1;  // marks it as shown; the list is not used after this
+    }
+  }
 done:
   if (out && fclose(out) != 0) ok = 0;
   if (!ok && out) unlink(destination);

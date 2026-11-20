@@ -179,6 +179,13 @@ jobs:
             python3 project/Tools/build_host_bridge.py build-ios "$objs" --include "$gen" \
               --recomp "$gen/${prefix}_pch.h" "$gen"/*.cpp
             extra=""; [ -f "$lib/librexppc$REX_SFX.dylib" ] && extra="-lrexppc$REX_SFX"
+            # Game code calls xam, xbdm and app functions too: link what ReXGlue's rex::sdk links
+            # (rexglue_sdk.cmake: base ppc xenos kernel xam xbdm app), as far as they exist here.
+            sdk=""; for n in base ppc xenos kernel xam xbdm app; do
+              if [ -f "$lib/librex$n$REX_SFX.dylib" ]; then sdk="$sdk -lrex$n$REX_SFX"; fi
+            done
+            echo "SDK libraries for game code:$sdk"
+            if [ -d gamecode/default ]; then extra="$sdk"; fi
             xcrun -sdk iphoneos clang++ -dynamiclib -arch arm64 \
               -miphoneos-version-min="$IOS_DEPLOYMENT_TARGET" \
               "$objs"/*.o -L"$lib" -lrexapp$REX_SFX -lrexkernel$REX_SFX -lrexbase$REX_SFX $extra \
@@ -193,9 +200,14 @@ jobs:
                 mkdir -p game-objects/$name
                 python3 project/Tools/build_host_bridge.py build-ios game-objects/$name --include "$PWD/$mod" \
                   --recomp "$PWD/$mod/${name}_pch.h" "$PWD/$mod"/*.cpp
+                # ReXGlue adds its allocator forwarders to every module library
+                # (rexglue_configure_module_target -> rexglue_link_host_allocator).
+                stub="$RUNNER_TEMP/stub-$name"
+                python3 project/Tools/build_host_bridge.py build-ios "$stub" \
+                  rexglue-sdk/cmake/rexglue_host_alloc_stub.cpp
                 xcrun -sdk iphoneos clang++ -dynamiclib -arch arm64 \
                   -miphoneos-version-min="$IOS_DEPLOYMENT_TARGET" \
-                  game-objects/$name/*.o -L"$lib" -lrexkernel$REX_SFX -lrexbase$REX_SFX $extra \
+                  game-objects/$name/*.o "$stub"/*.o -L"$lib" $sdk \
                   -install_name @rpath/lib$modlib.dylib -Wl,-rpath,@loader_path \
                   -o "$RUNNER_TEMP/lib$modlib.dylib"
                 nm -gU "$RUNNER_TEMP/lib$modlib.dylib" | grep -E 'ReXRegisterModule|ReXGetModuleImage'

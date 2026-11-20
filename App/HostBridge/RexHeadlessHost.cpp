@@ -777,7 +777,7 @@ bool PlayGame(Host &app, const std::filesystem::path &iso, const std::filesystem
   }
   // Swap the game partition from the code folder to the disc image.
   rex::filesystem::IFileSystem &files = title.GetFileSystem();
-  const std::string partition = "\Device\Harddisk0\Partition1";
+  const std::string partition = "\\Device\\Harddisk0\\Partition1";
   if (auto removed = files.Unmount(partition); !removed) {
     Say("  Play: unmount of the code folder failed: " + removed.error().GetDescription());
   }

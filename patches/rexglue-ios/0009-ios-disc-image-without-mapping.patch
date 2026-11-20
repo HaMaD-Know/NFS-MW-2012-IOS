@@ -1,0 +1,446 @@
+diff --git a/src/filesystem/container.cpp b/src/filesystem/container.cpp
+index f32cf4c..56c7fab 100644
+--- a/src/filesystem/container.cpp
++++ b/src/filesystem/container.cpp
+@@ -1,6 +1,7 @@
+ #include "filesystem/container.h"
+ 
+ #include <algorithm>
++#include <cerrno>
+ #include <cstring>
+ #include <deque>
+ #include <format>
+@@ -17,6 +18,12 @@
+ 
+ #include "container_parse.h"
+ 
++#if !defined(_WIN32)
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++
+ namespace rex::filesystem {
+ 
+ namespace {
+@@ -64,6 +71,79 @@ bool IsSafeName(std::string_view name) {
+ 
+ }  // namespace
+ 
++// iOS patch 0009: a GDFX disc image is mapped as a whole, which fails on iOS for a 7-8 GB disc
++// image (the process cannot map that much). When mapping fails, the image is read with pread
++// instead: the parser reads its directory tables, and Read() reads file data on demand. View()
++// then has no bytes to show, and callers fall back to Read().
++class DiscImageFile {
++ public:
++  ~DiscImageFile() {
++#if !defined(_WIN32)
++    if (fd_ >= 0) {
++      close(fd_);
++    }
++#endif
++  }
++
++  static std::unique_ptr<DiscImageFile> Open(const std::filesystem::path& path, std::string& why) {
++#if defined(_WIN32)
++    (void)path;
++    why = "reading without mapping is not supported on Windows";
++    return nullptr;
++#else
++    const int fd = open(path.c_str(), O_RDONLY);
++    if (fd < 0) {
++      why = std::format("open: {}", std::strerror(errno));
++      return nullptr;
++    }
++    struct stat info {};
++    if (fstat(fd, &info) != 0) {
++      why = std::format("fstat: {}", std::strerror(errno));
++      close(fd);
++      return nullptr;
++    }
++    auto file = std::unique_ptr<DiscImageFile>(new DiscImageFile());
++    file->fd_ = fd;
++    file->size_ = static_cast<u64>(info.st_size);
++    return file;
++#endif
++  }
++
++  [[nodiscard]] u64 GetSize() const { return size_; }
++
++  // Reads exactly length bytes at offset; thread safe (pread keeps no file position).
++  bool Read(u64 offset, void* out, size_t length) const {
++#if defined(_WIN32)
++    (void)offset;
++    (void)out;
++    return length == 0;
++#else
++    if (offset > size_ || size_ - offset < length) {
++      return false;
++    }
++    auto* bytes = static_cast<u8*>(out);
++    while (length > 0) {
++      const ssize_t got = pread(fd_, bytes, length, static_cast<off_t>(offset));
++      if (got < 0 && errno == EINTR) {
++        continue;
++      }
++      if (got <= 0) {
++        return false;
++      }
++      bytes += got;
++      offset += static_cast<u64>(got);
++      length -= static_cast<size_t>(got);
++    }
++    return true;
++#endif
++  }
++
++ private:
++  DiscImageFile() = default;
++  int fd_ = -1;
++  u64 size_ = 0;
++};
++
+ Container::Container() = default;
+ Container::Container(Container&& other) noexcept = default;
+ Container& Container::operator=(Container&& other) noexcept = default;
+@@ -83,8 +163,32 @@ Result<Container> Container::Open(const std::filesystem::path& path) {
+   }
+   auto map = memory::MappedMemory::Open(file, memory::MappedMemory::Mode::kRead);
+   if (!map) {
+-    return Err<Container>(BuildError(FileSystemError::kNotFound,
+-                                     std::format("cannot map '{}'", string::PathToUTF8(file))));
++    // iOS patch 0009: read a disc image that cannot be mapped with pread instead.
++    const int map_error = errno;
++    std::string why;
++    if (auto disc = DiscImageFile::Open(file, why)) {
++      const DiscImageFile* reader = disc.get();
++      const detail::ImageReader read_bytes = [reader](u64 offset, void* out, size_t length) {
++        return reader->Read(offset, out, length);
++      };
++      if (detail::IsGDFX(read_bytes)) {
++        Container container;
++        container.path_ = file;
++        container.nodes_.emplace_back().info.attributes = FileAttributes::kDirectory;
++        container.type_ = ContainerType::kGDFX;
++        container.total_size_ = disc->GetSize();
++        REX_TRY_VOID(detail::ParseGDFX(read_bytes, container.nodes_));
++        container.disc_ = std::move(disc);
++        REXFS_WARN("'{}' could not be mapped ({}); reading the disc image without mapping",
++                   string::PathToUTF8(file), std::strerror(map_error));
++        return container;
++      }
++      why = "not a GDFX disc image";
++    }
++    return Err<Container>(BuildError(
++        FileSystemError::kNotFound,
++        std::format("cannot map '{}' ({}); not readable without mapping either ({})",
++                    string::PathToUTF8(file), std::strerror(map_error), why)));
+   }
+ 
+   Container container;
+@@ -218,13 +322,20 @@ Result<size_t> Container::Read(const ContainerNode& node, u64 offset, std::span<
+     }
+     const u64 skip = offset > source ? offset - source : 0;
+     const u64 length = std::min(extent.length - skip, remaining);
+-    const std::span<const u8> file = BytesOf(*files_[extent.file]);
+     const u64 start = extent.offset + skip;
+-    if (!detail::IsInBounds(file, start, length)) {
+-      REXFS_WARN("container read of '{}' stops at the end of the data file", node.info.name);
+-      break;
++    if (disc_) {
++      if (!disc_->Read(start, buffer.data() + copied, static_cast<size_t>(length))) {
++        REXFS_WARN("disc image read of '{}' failed at {:#x}", node.info.name, start);
++        break;
++      }
++    } else {
++      const std::span<const u8> file = BytesOf(*files_[extent.file]);
++      if (!detail::IsInBounds(file, start, length)) {
++        REXFS_WARN("container read of '{}' stops at the end of the data file", node.info.name);
++        break;
++      }
++      std::memcpy(buffer.data() + copied, file.data() + start, length);
+     }
+-    std::memcpy(buffer.data() + copied, file.data() + start, length);
+     copied += length;
+     remaining -= length;
+     source += extent.length;
+@@ -233,6 +344,9 @@ Result<size_t> Container::Read(const ContainerNode& node, u64 offset, std::span<
+ }
+ 
+ std::span<const u8> Container::View(const ContainerNode& node) const {
++  if (disc_) {
++    return {};  // not mapped (iOS patch 0009): callers read instead
++  }
+   if (node.extents.size() != 1 || node.extents.front().length < node.info.size) {
+     return {};
+   }
+diff --git a/src/filesystem/container.h b/src/filesystem/container.h
+index d87b477..63fc82c 100644
+--- a/src/filesystem/container.h
++++ b/src/filesystem/container.h
+@@ -29,6 +29,8 @@ class MappedMemory;
+ 
+ namespace rex::filesystem {
+ 
++class DiscImageFile;  // iOS patch 0009: a disc image read without mapping it
++
+ /**
+  * Reads the package header from the first bytes of a package.
+  *
+@@ -82,6 +84,7 @@ class Container final : public IContainerImage, public MoveOnly {
+   std::filesystem::path path_;
+   std::unique_ptr<XContentPackageHeader> header_;
+   std::vector<std::unique_ptr<memory::MappedMemory>> files_;
++  std::unique_ptr<DiscImageFile> disc_;  // set instead of files_ when the image is not mapped
+   std::vector<ContainerNode> nodes_;
+   u64 total_size_ = 0;
+ };
+diff --git a/src/filesystem/container_parse.h b/src/filesystem/container_parse.h
+index 52e9deb..8aedc28 100644
+--- a/src/filesystem/container_parse.h
++++ b/src/filesystem/container_parse.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <cstring>
++#include <functional>
+ #include <optional>
+ #include <span>
+ #include <string>
+@@ -71,8 +72,15 @@ inline rex::Error Corrupt(std::string message) {
+                                      std::span<const std::span<const u8>> files,
+                                      std::vector<ContainerNode>& nodes);
+ 
++/**
++ * Reads bytes of an image that is not mapped as a whole (iOS: a disc image too large to map).
++ * Returns false when not all length bytes at offset could be read.
++ */
++using ImageReader = std::function<bool(u64 offset, void* out, size_t length)>;
++
+ /** Reports whether an image holds the GDFX magic at one of the candidate offsets. */
+ bool IsGDFX(std::span<const u8> image);
++bool IsGDFX(const ImageReader& read);
+ 
+ /**
+  * Parses a GDFX disc image into nodes. nodes holds the root on entry.
+@@ -81,5 +89,6 @@ bool IsGDFX(std::span<const u8> image);
+  * @return kCorrupt when the magic is missing or an entry is out of range.
+  */
+ [[nodiscard]] Result<void> ParseGDFX(std::span<const u8> image, std::vector<ContainerNode>& nodes);
++[[nodiscard]] Result<void> ParseGDFX(const ImageReader& read, std::vector<ContainerNode>& nodes);
+ 
+ }  // namespace rex::filesystem::detail
+diff --git a/src/filesystem/gdfx.cpp b/src/filesystem/gdfx.cpp
+index 6d8bed6..e11dc22 100644
+--- a/src/filesystem/gdfx.cpp
++++ b/src/filesystem/gdfx.cpp
+@@ -15,6 +15,8 @@
+ #include <array>
+ #include <cstring>
+ #include <format>
++#include <map>
++#include <optional>
+ #include <set>
+ #include <string>
+ #include <string_view>
+@@ -40,14 +42,27 @@ constexpr std::string_view kMagic = "MICROSOFT*XBOX*MEDIA";
+ 
+ constexpr u64 kUnixEpochTicks = 10000 * 11644473600000LL;
+ 
+-bool MagicAt(std::span<const u8> image, u64 offset) {
+-  return IsInBounds(image, offset, kMagic.size()) &&
+-         std::memcmp(image.data() + offset, kMagic.data(), kMagic.size()) == 0;
++// iOS patch 0009: the parser reads through an ImageReader, so a disc image does not have to be
++// mapped as a whole. A mapped image is read through a reader over its span.
++ImageReader SpanReader(std::span<const u8> image) {
++  return [image](u64 offset, void* out, size_t length) {
++    if (!IsInBounds(image, offset, length)) {
++      return false;
++    }
++    std::memcpy(out, image.data() + offset, length);
++    return true;
++  };
++}
++
++bool MagicAt(const ImageReader& read_bytes, u64 offset) {
++  std::array<char, kMagic.size()> found{};
++  return read_bytes(offset, found.data(), found.size()) &&
++         std::memcmp(found.data(), kMagic.data(), kMagic.size()) == 0;
+ }
+ 
+-std::optional<u64> FindGameOffset(std::span<const u8> image) {
++std::optional<u64> FindGameOffset(const ImageReader& read_bytes) {
+   for (const u64 offset : kGameOffsets) {
+-    if (MagicAt(image, offset + (kMagicSector * kSectorSize))) {
++    if (MagicAt(read_bytes, offset + (kMagicSector * kSectorSize))) {
+       return offset;
+     }
+   }
+@@ -56,6 +71,7 @@ std::optional<u64> FindGameOffset(std::span<const u8> image) {
+ 
+ struct Visit {
+   u64 table = 0;
++  u64 table_size = 0;
+   u32 ordinal = 0;
+   u32 parent = 0;
+   bool emit = false;
+@@ -68,12 +84,12 @@ struct Visit {
+ 
+ class GDFXReader {
+  public:
+-  GDFXReader(std::span<const u8> image, u64 game_offset)
+-      : image_(image), game_offset_(game_offset) {}
++  GDFXReader(const ImageReader& read_bytes, u64 game_offset) : read_(read_bytes), game_offset_(game_offset) {}
+ 
+-  [[nodiscard]] Result<void> Walk(u64 root_table, std::vector<ContainerNode>& nodes) {
++  [[nodiscard]] Result<void> Walk(u64 root_table, u64 root_size,
++                                  std::vector<ContainerNode>& nodes) {
+     std::vector<Visit> stack;
+-    stack.push_back({.table = root_table});
++    stack.push_back({.table = root_table, .table_size = root_size});
+     while (!stack.empty()) {
+       Visit visit = std::move(stack.back());
+       stack.pop_back();
+@@ -87,37 +103,68 @@ class GDFXReader {
+   }
+ 
+  private:
++  // A directory table, read once from the image. nullptr when it is too large or unreadable.
++  const std::vector<u8>* Table(u64 offset, u64 size) {
++    auto found = tables_.find(offset);
++    if (found != tables_.end()) {
++      return &found->second;
++    }
++    if (size > kMaxRootSize) {
++      return nullptr;
++    }
++    std::vector<u8> bytes(static_cast<size_t>(size));
++    if (!read_(offset, bytes.data(), bytes.size())) {
++      return nullptr;
++    }
++    return &tables_.emplace(offset, std::move(bytes)).first->second;
++  }
++
+   [[nodiscard]] Result<void> Expand(const Visit& visit, std::vector<Visit>& stack) {
+     if (!visited_.insert({visit.table, visit.ordinal}).second) {
+       return Err(Corrupt(
+           std::format("GDFX entry {} of the table at {:#x} repeats", visit.ordinal, visit.table)));
+     }
++    const std::vector<u8>* table = Table(visit.table, visit.table_size);
++    if (!table) {
++      return Err(Corrupt(std::format("GDFX table at {:#x} ({} bytes) is outside the image",
++                                     visit.table, visit.table_size)));
++    }
++    const std::span<const u8> bytes(*table);
+     const u64 entry_offset = static_cast<u64>(visit.ordinal) * 4;
+-    if (!IsInBounds(image_, visit.table + entry_offset, kEntryHeaderSize)) {
+-      return Err(Corrupt(std::format("GDFX entry {} of the table at {:#x} is outside the image",
++    if (!IsInBounds(bytes, entry_offset, kEntryHeaderSize)) {
++      return Err(Corrupt(std::format("GDFX entry {} of the table at {:#x} is outside the table",
+                                      visit.ordinal, visit.table)));
+     }
+-    const u8* p = image_.data() + visit.table + entry_offset;
++    const u8* p = bytes.data() + entry_offset;
+     u16 node_l = 0;
+     u16 node_r = 0;
+-    Visit entry{
+-        .table = visit.table, .ordinal = visit.ordinal, .parent = visit.parent, .emit = true};
++    Visit entry{.table = visit.table,
++                .table_size = visit.table_size,
++                .ordinal = visit.ordinal,
++                .parent = visit.parent,
++                .emit = true};
+     std::memcpy(&node_l, p + 0, sizeof(node_l));
+     std::memcpy(&node_r, p + 2, sizeof(node_r));
+     std::memcpy(&entry.sector, p + 4, sizeof(entry.sector));
+     std::memcpy(&entry.length, p + 8, sizeof(entry.length));
+     entry.attributes = p[12];
+     const u8 name_length = p[13];
+-    if (!IsInBounds(image_, visit.table + entry_offset + kEntryHeaderSize, name_length)) {
+-      return Err(Corrupt(std::format("GDFX name of entry {} is outside the image", visit.ordinal)));
++    if (!IsInBounds(bytes, entry_offset + kEntryHeaderSize, name_length)) {
++      return Err(Corrupt(std::format("GDFX name of entry {} is outside the table", visit.ordinal)));
+     }
+     entry.name.assign(reinterpret_cast<const char*>(p + kEntryHeaderSize), name_length);
+     if (node_r) {
+-      stack.push_back({.table = visit.table, .ordinal = node_r, .parent = visit.parent});
++      stack.push_back({.table = visit.table,
++                       .table_size = visit.table_size,
++                       .ordinal = node_r,
++                       .parent = visit.parent});
+     }
+     stack.push_back(std::move(entry));
+     if (node_l) {
+-      stack.push_back({.table = visit.table, .ordinal = node_l, .parent = visit.parent});
++      stack.push_back({.table = visit.table,
++                       .table_size = visit.table_size,
++                       .ordinal = node_l,
++                       .parent = visit.parent});
+     }
+     return Ok();
+   }
+@@ -143,42 +190,49 @@ class GDFXReader {
+     nodes.push_back(std::move(node));
+     nodes[visit.parent].children.push_back(index);
+     if (directory && visit.length) {
+-      stack.push_back({.table = data_offset, .parent = index});
++      stack.push_back({.table = data_offset, .table_size = visit.length, .parent = index});
+     }
+   }
+ 
+-  std::span<const u8> image_;
++  const ImageReader& read_;
+   u64 game_offset_ = 0;
+   std::set<std::pair<u64, u32>> visited_;
++  std::map<u64, std::vector<u8>> tables_;
+ };
+ 
+ }  // namespace
+ 
+ bool IsGDFX(std::span<const u8> image) {
+-  return FindGameOffset(image).has_value();
++  return IsGDFX(SpanReader(image));
++}
++
++bool IsGDFX(const ImageReader& read_bytes) {
++  return FindGameOffset(read_bytes).has_value();
+ }
+ 
+ [[nodiscard]] Result<void> ParseGDFX(std::span<const u8> image, std::vector<ContainerNode>& nodes) {
+-  auto game_offset = FindGameOffset(image);
++  return ParseGDFX(SpanReader(image), nodes);
++}
++
++[[nodiscard]] Result<void> ParseGDFX(const ImageReader& read_bytes, std::vector<ContainerNode>& nodes) {
++  auto game_offset = FindGameOffset(read_bytes);
+   if (!game_offset) {
+     return Err(Corrupt("GDFX magic not found"));
+   }
+   const u64 volume = *game_offset + (kMagicSector * kSectorSize);
+-  auto root_sector = ReadAt<u32>(image, volume + 20);
+-  auto root_size = ReadAt<u32>(image, volume + 24);
+-  if (!root_sector || !root_size) {
++  u32 root_sector = 0;
++  u32 root_size = 0;
++  if (!read_bytes(volume + 20, &root_sector, sizeof(root_sector)) ||
++      !read_bytes(volume + 24, &root_size, sizeof(root_size))) {
+     return Err(Corrupt("GDFX volume descriptor is outside the image"));
+   }
+-  if (*root_size < kMinRootSize || *root_size > kMaxRootSize) {
+-    return Err(Corrupt(std::format("GDFX root table size {} is out of range", *root_size)));
+-  }
+-  const u64 root_offset = *game_offset + (static_cast<u64>(*root_sector) * kSectorSize);
+-  if (!IsInBounds(image, root_offset, *root_size)) {
+-    return Err(Corrupt("GDFX root table is outside the image"));
++  if (root_size < kMinRootSize || root_size > kMaxRootSize) {
++    return Err(Corrupt(std::format("GDFX root table size {} is out of range", root_size)));
+   }
++  const u64 root_offset = *game_offset + (static_cast<u64>(root_sector) * kSectorSize);
+   nodes.front().info.attributes = FileAttributes::kDirectory;
+-  GDFXReader reader(image, *game_offset);
+-  return reader.Walk(root_offset, nodes);
++  GDFXReader reader(read_bytes, *game_offset);
++  return reader.Walk(root_offset, root_size, nodes);
+ }
+ 
+ }  // namespace rex::filesystem::detail

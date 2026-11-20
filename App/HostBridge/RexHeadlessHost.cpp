@@ -841,11 +841,18 @@ int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char
     std::error_code error;
     std::filesystem::create_directories(root, error);
     TellSDLMainIsReady();
-    const std::vector<std::string> args = {"--app.root=" + root.string(), "--gpu.driver=vulkan"};
+    // cache_root turns on ReXGlue's shader storage (gpu.xenos.store_shaders, on by default):
+    // every shader and pipeline converted for Metal is saved there and built again at the next
+    // start, so each one stutters only the first time it is ever seen.
+    const std::filesystem::path cache = root / "cache";
+    std::filesystem::create_directories(cache, error);
+    const std::vector<std::string> args = {"--app.root=" + root.string(),
+                                           "--app.cache_root=" + cache.string(),
+                                           "--gpu.driver=vulkan"};
     int ok = 0;
     {
       Host app(true);
-      Say("  Play: Init");
+      Say("  Play: Init (shader cache: " + cache.string() + ")");
       const rex::Result<void> init = app.Init(rex::CLIArgList::Parse(args));
       if (!init) {
         Say("  Play: Init FAILED: " + init.error().GetDescription());

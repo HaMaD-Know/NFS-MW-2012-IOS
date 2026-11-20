@@ -479,6 +479,12 @@ bool RunTestGame(Host &app) {
 #else
   const std::filesystem::path game = OwnFolder().parent_path() / "TestGame";
   rex::kernel::TitleRuntime title(kPPCImageConfig);
+  // The title paths are process-wide: the guest-memory test before this one cleared title.entry
+  // (shell 0.1.4 then loaded no executable: "PrepareModuleLaunch: No executable module loaded").
+  if (auto set = title.GetTitlePaths().entry.SetText(rex::SettingLayer::kTitle, "default.xex"); !set) {
+    ReportResult("FAIL", "Test game (our own Xbox 360 program)", "entry: " + set.error().GetDescription());
+    return false;
+  }
   if (auto set = title.GetTitlePaths().game_root.SetText(rex::SettingLayer::kTitle, game.string()); !set) {
     ReportResult("FAIL", "Test game (our own Xbox 360 program)", "game_root: " + set.error().GetDescription());
     return false;

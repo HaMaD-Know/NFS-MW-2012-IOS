@@ -1,0 +1,57 @@
+diff --git a/src/codegen/builder/control_flow.cpp b/src/codegen/builder/control_flow.cpp
+index 3184f34..4d56675 100644
+--- a/src/codegen/builder/control_flow.cpp
++++ b/src/codegen/builder/control_flow.cpp
+@@ -8,6 +8,8 @@
+  *              See LICENSE file in the project root for full license text.
+  */
+ 
++#include <algorithm>
++#include <vector>
+ #include "builder_context.h"
+ #include "builder.h"
+ 
+@@ -130,16 +132,27 @@ bool Build<PPC_INST_BCTR>(BuilderContext& ctx) {
+   }
+ 
+   if (jt) {
+-    ctx.Println("\tswitch ({}.u32) {{", ctx.R(jt->index_register));
+-
++    // iOS patch 0012: switch on the jump target the guest code computed at run time (CTR, loaded
++    // from the real image's table), not on the table index with targets read at translation
++    // time. In NFS Most Wanted 2012 the translation-time read of a byte offset table was one
++    // entry off (sub_89815648: every module type went to the previous type's slot), which left a
++    // null pointer the game then read. The labels stay the translation-time targets; a target
++    // that is not among them stops with its address instead of jumping to a wrong one.
++    ctx.Println("\tswitch ({}.u32) {{", ctx.CTR());
++
++    std::vector<u32> emitted_targets;
+     for (size_t i = 0; i < jt->targets.size(); i++) {
+-      ctx.Println("\tcase {}:", i);
+       auto label = jt->targets[i];
+ 
+       if (label == 0) {
+-        ctx.Println("\t\t__builtin_trap(); // ERROR - detected jump to null value");
+-        continue;
++        continue;  // a null entry has no address to switch on; the default case covers it
++      }
++      if (std::find(emitted_targets.begin(), emitted_targets.end(), label) !=
++          emitted_targets.end()) {
++        continue;  // several table entries may share one target
+       }
++      emitted_targets.push_back(label);
++      ctx.Println("\tcase 0x{:X}u:", label);
+ 
+       auto type = ctx.GetGraph().ClassifyTarget(label, ctx.base, false);
+       switch (type) {
+@@ -175,7 +188,9 @@ bool Build<PPC_INST_BCTR>(BuilderContext& ctx) {
+     }
+ 
+     ctx.Println("\tdefault:");
+-    ctx.Println("\t\t__builtin_trap(); // Switch case out of range");
++    ctx.Println(
++        "\t\tREXCPU_FATAL(\"Jump table at bctr 0x{:08X} has no target 0x{{:08X}}\", {}.u32);",
++        ctx.base, ctx.CTR());
+     ctx.Println("\t}}");
+ 
+     ctx.ResetJumpTable();

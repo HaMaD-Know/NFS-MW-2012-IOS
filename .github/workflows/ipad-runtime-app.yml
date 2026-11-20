@@ -112,13 +112,19 @@ jobs:
           name: ${{ inputs.game_code_artifact }}
           path: gamecode
 
+      # Restore and save are separate so the compiled objects are saved even when a later step
+      # fails (actions/cache saves only on success), and private Mac minutes are not spent
+      # compiling the same 199 MB again. Each run saves under its own key; restore takes the newest.
+      # build_host_bridge.py keeps only objects whose flags match, so a stale restore is safe.
       - name: Restore compiled game code (private build)
         if: inputs.game_code_artifact != ''
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: game-objects
-          key: game-objects-${{ env.REXGLUE_CONFIG }}-${{ env.REXGLUE_REF }}-${{ hashFiles('gamecode/**/*.cpp', 'gamecode/**/*.h', 'project/Tools/build_host_bridge.py') }}
-          restore-keys: game-objects-${{ env.REXGLUE_CONFIG }}-${{ env.REXGLUE_REF }}-
+          key: game-objects-${{ env.REXGLUE_CONFIG }}-${{ env.REXGLUE_REF }}-${{ hashFiles('gamecode/**/*.cpp', 'gamecode/**/*.h') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            game-objects-${{ env.REXGLUE_CONFIG }}-${{ env.REXGLUE_REF }}-${{ hashFiles('gamecode/**/*.cpp', 'gamecode/**/*.h') }}-
+            game-objects-${{ env.REXGLUE_CONFIG }}-${{ env.REXGLUE_REF }}-
 
       - name: Recompile the test program with ReXGlue
         if: inputs.game_code_artifact == ''
@@ -211,6 +217,13 @@ jobs:
             done
             exit 1
           fi
+
+      - name: Save compiled game code (private build, also after a failure)
+        if: always() && inputs.game_code_artifact != '' && hashFiles('game-objects/**/*.o') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: game-objects
+          key: game-objects-${{ env.REXGLUE_CONFIG }}-${{ env.REXGLUE_REF }}-${{ hashFiles('gamecode/**/*.cpp', 'gamecode/**/*.h') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # The Vulkan SDK ships MoltenVK for iOS only as a static library; ReXGlue loads the Vulkan
       # runtime at run time, so link it into a dynamic library.

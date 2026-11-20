@@ -75,15 +75,26 @@ def main() -> int:
     flags += [f"-I{d}" for d in includes]
     os.makedirs(object_dir, exist_ok=True)
     print("Compiler flags:", " ".join(shlex.quote(a) for a in flags), flush=True)
-    # Compile in parallel, one job per CPU core. An object newer than its source and newer than
-    # this flag set is kept, so a restored cache of game objects is not compiled again.
-    import concurrent.futures, hashlib
-    stamp = hashlib.sha256(" ".join(flags).encode()).hexdigest()[:16]
+    # Compile in parallel, one job per CPU core. An object compiled from the same source contents
+    # (and the same headers in the --include folders) with the same flags is kept, so a restored cache
+    # of game objects is not compiled again, and a cache from an older translation is never reused
+    # for changed sources. File times are no help: restored and downloaded files get new times.
+    import concurrent.futures, glob, hashlib
+    base = hashlib.sha256(" ".join(flags).encode())
+    for header in sorted(set(([pch] if pch else [])
+                             + [h for d in includes for h in glob.glob(os.path.join(d, "*.h"))])):
+        with open(header, "rb") as f:
+            base.update(os.path.basename(header).encode() + b"\0" + f.read())
     def compile_one(source):
         obj = os.path.join(object_dir, os.path.splitext(os.path.basename(source))[0] + ".o")
-        mark = obj + "." + stamp
+        h = base.copy()
+        with open(source, "rb") as f:
+            h.update(f.read())
+        mark = obj + "." + h.hexdigest()[:16]
         if os.path.exists(obj) and os.path.exists(mark):
             return source, 0, "kept"
+        for old in glob.glob(glob.escape(obj) + ".*"):
+            os.remove(old)
         proc = subprocess.run(flags + ["-c", source, "-o", obj], cwd=cwd, capture_output=True, text=True)
         if proc.returncode == 0:
             open(mark, "w").close()

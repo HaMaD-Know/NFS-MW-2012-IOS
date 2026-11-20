@@ -1015,6 +1015,15 @@ int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char
                                            // placeholder draw usage") — suspected in the hang at
                                            // the cutscene -> driving switch.
                                            "--gpu.xenos.async_shader_compilation=false",
+                                           // Shell 0.1.19: the hang at the cutscene -> driving
+                                           // switch is a GPU WAIT_REG_MEM on memory 0x149570F4
+                                           // == 0xFFFFFFFF right after draws to R16G16(B16A16)
+                                           // UINT targets: the game resolves a flag render
+                                           // target to memory and waits for it there. With
+                                           // readback_resolve "none" resolves stay on the host
+                                           // GPU and guest memory keeps 0. "full" copies every
+                                           // resolve back to guest memory at once.
+                                           "--gpu.xenos.readback_resolve=full",
                                            "--log.flush_level=debug",
                                            "--log.categories.kernel=debug",
                                            "--log.categories.xam=debug",

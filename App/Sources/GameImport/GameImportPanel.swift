@@ -54,7 +54,7 @@ struct GameImportPanel: View {
             Text("For the private build (uses the chosen folder or disc image)")
                 .font(.caption)
             HStack {
-                Button("Export main file") { library.exportMainFile() }
+                Button("Export game code") { library.exportMainFile() }
                 Button("Make file list") { library.makeFileList() }
             }
             .buttonStyle(.bordered)

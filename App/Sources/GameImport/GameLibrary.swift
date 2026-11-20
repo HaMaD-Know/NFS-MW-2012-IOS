@@ -173,12 +173,20 @@ final class GameLibrary: ObservableObject {
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             var lines: [String] = []
-            let ok = GameLibrary.collect(into: &lines) { sink in
+            // The game's code: default.xex is a launcher that loads hawaii.xex.dll, the real
+            // game code (found from the file list, 2026-11-20). Both are exported, nothing else.
+            var ok = GameLibrary.collect(into: &lines) { sink in
                 gamecheck_export_file(url.path, image ? 1 : 0, "default.xex", destination.path, sink)
             } != 0
+            var more: [String] = []
+            let dll = self.exportFolder.appendingPathComponent("hawaii.xex.dll")
+            ok = ok && GameLibrary.collect(into: &more) { sink in
+                gamecheck_export_file(url.path, image ? 1 : 0, "hawaii.xex.dll", dll.path, sink)
+            } != 0
+            lines += more
             for line in lines { self.log(line) }
-            self.publish(.noGame, title: ok ? "✓ default.xex exported" : "✗ Export failed",
-                         message: ok ? "Saved in Files › NFS MW Shell › Export › default.xex. Upload only this file to your private GitHub project, then delete it here."
+            self.publish(.noGame, title: ok ? "✓ Game code exported (2 files)" : "✗ Export failed",
+                         message: ok ? "Saved in Files › NFS MW Shell › Export: default.xex and hawaii.xex.dll. Upload only these two files to your private GitHub project, then delete them here."
                                      : "The file could not be copied. See the details.",
                          details: lines)
         }

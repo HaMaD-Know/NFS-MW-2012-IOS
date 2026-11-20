@@ -26,8 +26,8 @@ targets:
       path: Generated/Info.plist
       properties:
         CFBundleDisplayName: NFS MW Shell
-        CFBundleShortVersionString: "0.1.7"
-        CFBundleVersion: "17"
+        CFBundleShortVersionString: "0.1.8"
+        CFBundleVersion: "18"
         UILaunchScreen: {}
         UIRequiresFullScreen: true
         UIStatusBarHidden: true

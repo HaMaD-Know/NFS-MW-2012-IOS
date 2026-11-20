@@ -4,6 +4,14 @@
 name: iPad runtime app
 
 on:
+  # The owner's private repository calls this recipe with the game's translated code (an artifact
+  # of that private run). Public runs never have game code.
+  workflow_call:
+    inputs:
+      game_code_artifact:
+        description: Name of the artifact holding ReXGlue's generated code of the game
+        type: string
+        default: ""
   workflow_dispatch:
   push:
     branches: [main]
@@ -36,6 +44,8 @@ jobs:
       - name: Check out this project
         uses: actions/checkout@v4
         with:
+          repository: HaMaD-Know/NFS-MW-2012-IOS   # also when called from the private repository
+          ref: main
           path: project
 
       - name: Check out ReXGlue SDK at the pinned commit
@@ -94,7 +104,24 @@ jobs:
 
       # The project's own tiny Xbox 360 test program (Tools/make_test_xex.py, no game code),
       # recompiled by ReXGlue's recompiler built for this Mac, exactly as a game would be.
+      # Private build only: the game's code, translated by the private repository's run.
+      - name: Get the game's translated code (private build)
+        if: inputs.game_code_artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.game_code_artifact }}
+          path: gamecode
+
+      - name: Restore compiled game code (private build)
+        if: inputs.game_code_artifact != ''
+        uses: actions/cache@v4
+        with:
+          path: game-objects
+          key: game-objects-${{ env.REXGLUE_CONFIG }}-${{ env.REXGLUE_REF }}-${{ hashFiles('gamecode/**/*.cpp', 'gamecode/**/*.h', 'project/Tools/build_host_bridge.py') }}
+          restore-keys: game-objects-${{ env.REXGLUE_CONFIG }}-${{ env.REXGLUE_REF }}-
+
       - name: Recompile the test program with ReXGlue
+        if: inputs.game_code_artifact == ''
         run: |
           report() {  # logs need a sign-in; annotations do not
             { grep -E 'error|Error|FAILED|undefined' "$1" || tail -40 "$1"; } | head -50 > "$1.err"
@@ -133,11 +160,18 @@ jobs:
           build() {
             set -e
             echo "libraries: $(cd "$lib" && ls *.dylib | tr '\n' ' ')"
-            gen="$TESTGAME/generated/default"; objs="$RUNNER_TEMP/bridge-objects"
+            objs="$RUNNER_TEMP/bridge-objects"
+            if [ -d gamecode/default ]; then
+              # Private build: the game's launcher code goes into the bridge, its code module
+              # into its own library (as ReXGlue's dll_targets.cmake builds it).
+              gen="$PWD/gamecode/default"; prefix=nfsmw
+            else
+              gen="$TESTGAME/generated/default"; prefix=testgame
+            fi
             python3 project/Tools/build_host_bridge.py build-ios "$objs" --include "$gen" \
               project/App/HostBridge/RexHeadlessHost.cpp
             python3 project/Tools/build_host_bridge.py build-ios "$objs" --include "$gen" \
-              --recomp "$gen/testgame_pch.h" "$gen"/*.cpp
+              --recomp "$gen/${prefix}_pch.h" "$gen"/*.cpp
             extra=""; [ -f "$lib/librexppc$REX_SFX.dylib" ] && extra="-lrexppc$REX_SFX"
             xcrun -sdk iphoneos clang++ -dynamiclib -arch arm64 \
               -miphoneos-version-min="$IOS_DEPLOYMENT_TARGET" \
@@ -145,6 +179,22 @@ jobs:
               -install_name @rpath/libnfsmwhost.dylib -Wl,-rpath,@loader_path \
               -o "$RUNNER_TEMP/libnfsmwhost.dylib"
             nm -gU "$RUNNER_TEMP/libnfsmwhost.dylib" | grep -E ' _nfsmw_rexhost_(headless|window|memory|all)$'
+            if [ -d gamecode/default ]; then
+              for mod in gamecode/*/; do
+                mod=${mod%/}; name=$(basename "$mod"); [ "$name" = default ] && continue
+                modlib=$(grep -o '"nfsmw_[A-Za-z0-9_]*"' gamecode/default/module_registry.cpp | tr -d '"' | head -1)
+                echo "Game module $name -> lib$modlib.dylib ($(ls "$mod"/*.cpp | wc -l) files)"
+                mkdir -p game-objects/$name
+                python3 project/Tools/build_host_bridge.py build-ios game-objects/$name --include "$PWD/$mod" \
+                  --recomp "$PWD/$mod/${name}_pch.h" "$PWD/$mod"/*.cpp
+                xcrun -sdk iphoneos clang++ -dynamiclib -arch arm64 \
+                  -miphoneos-version-min="$IOS_DEPLOYMENT_TARGET" \
+                  game-objects/$name/*.o -L"$lib" -lrexkernel$REX_SFX -lrexbase$REX_SFX $extra \
+                  -install_name @rpath/lib$modlib.dylib -Wl,-rpath,@loader_path \
+                  -o "$RUNNER_TEMP/lib$modlib.dylib"
+                nm -gU "$RUNNER_TEMP/lib$modlib.dylib" | grep -E 'ReXRegisterModule|ReXGetModuleImage'
+              done
+            fi
             otool -L "$RUNNER_TEMP/libnfsmwhost.dylib"
           }
           set +e  # the step's own -e would end it here, before the errors are reported
@@ -227,8 +277,12 @@ jobs:
           cp rexglue-sdk/out/ios-arm64/libSDL3$REX_SFX.0.dylib "$fw/"
           cp "$RUNNER_TEMP/libMoltenVK.dylib" "$fw/"
           cp "$RUNNER_TEMP/libnfsmwhost.dylib" "$fw/"
-          # The project's own test program (not game data), loaded by ReXGlue as game:\default.xex.
-          mkdir -p "$app/TestGame" && cp "$TESTGAME/default.xex" "$app/TestGame/"
+          if [ -d gamecode/default ]; then
+            cp "$RUNNER_TEMP"/libnfsmw_*.dylib "$fw/"   # the game's code module (private build)
+          else
+            # The project's own test program (not game data), loaded by ReXGlue as game:\default.xex.
+            mkdir -p "$app/TestGame" && cp "$TESTGAME/default.xex" "$app/TestGame/"
+          fi
           # Let each library find its neighbours, then re-sign ad hoc (the sideloading tool
           # re-signs everything with the user's Apple ID at install time).
           for f in "$fw"/*.dylib; do
@@ -270,7 +324,7 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: NFSMWShell-runtime-unsigned-ipa
+          name: ${{ inputs.game_code_artifact != '' && 'NFSMW-game-private-ipa' || 'NFSMWShell-runtime-unsigned-ipa' }}
           path: |
             dist/NFSMWShell-runtime-unsigned.ipa
             dist/NFSMWShell-runtime-unsigned.ipa.sha256

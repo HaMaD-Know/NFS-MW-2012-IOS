@@ -8,7 +8,7 @@ options, the output and input and the library's private REX_BUILDING_* define ar
 
 With --recomp, the sources are ReXGlue-generated recompiled code: warnings are not errors (the
 generated code is not ours to change), and ReXGlue's recompiled-code options are added
-(rexglue_recomp_options: -O1, -fasynchronous-unwind-tables) together with the generated
+(rexglue_recomp_options: -fasynchronous-unwind-tables; -O2 here instead of its default -O1) together with the generated
 precompiled header, which the generated files expect to be included first.
 
 Used by .github/workflows/ipad-runtime-app.yml on the macOS runner.
@@ -70,7 +70,8 @@ def main() -> int:
     if pch:
         # Generated code: keep ReXGlue's defines and includes, drop warning flags and -O0.
         flags = [f for f in flags if not (f.startswith("-W") or f in ("-O0", "-Werror"))]
-        flags += ["-O1", "-fasynchronous-unwind-tables", "-w", "-include", pch]
+        # ReXGlue's default for recompiled code is -O1; shell 0.1.5 measures -O2 on the iPad.
+        flags += ["-O2", "-fasynchronous-unwind-tables", "-w", "-include", pch]
     flags += [f"-I{d}" for d in includes]
     os.makedirs(object_dir, exist_ok=True)
     print("Compiler flags:", " ".join(shlex.quote(a) for a in flags), flush=True)

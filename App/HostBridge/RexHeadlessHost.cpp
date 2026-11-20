@@ -510,27 +510,54 @@ bool RunTestGame(Host &app) {
   }
   const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
   std::uint8_t *base = title.GetMembase().GetBase();
-  std::uint32_t raw_sum = 0, raw_marker = 0;
-  if (base) {
-    std::memcpy(&raw_sum, base + 0x82004000u, 4);
-    std::memcpy(&raw_marker, base + 0x82004004u, 4);
-  }
-  const std::uint32_t sum = __builtin_bswap32(raw_sum);  // the guest stores big-endian
-  const std::uint32_t marker = __builtin_bswap32(raw_marker);
+  // The guest stores big-endian words; read them raw and swap.
+  const auto word = [base](std::uint32_t address) -> std::uint32_t {
+    std::uint32_t raw = 0;
+    if (base) std::memcpy(&raw, base + address, 4);
+    return __builtin_bswap32(raw);
+  };
+  const std::uint32_t sum = word(0x82004000u), marker = word(0x82004004u);
+  const std::uint32_t frequency = word(0x82004010u);
+  const std::uint64_t system_time = (std::uint64_t(word(0x82004018u)) << 32) | word(0x8200401Cu);
+  const std::uint32_t create_status = word(0x82004024u), wait_status = word(0x82004028u);
+  const std::uint32_t thread_value = word(0x82004030u), thread_marker = word(0x82004034u);
   constexpr std::uint64_t kN = 50000000ull;
   const std::uint32_t expected = static_cast<std::uint32_t>(kN * (kN + 1) / 2);
   const int reason = exit_reason.load();
   title.Unload();
-  const bool ok = reason == static_cast<int>(rex::kernel::TitleExitReason::kNormalExit) &&
-                  sum == expected && marker == 0x600DF00Du;
-  char text[300];
+
+  // The same loop written natively, for comparison (volatile bound so it is not folded away).
+  volatile std::uint32_t native_n = static_cast<std::uint32_t>(kN);
+  const auto native_start = std::chrono::steady_clock::now();
+  std::uint32_t native_sum = 0;
+  for (std::uint32_t i = 1; i <= native_n; i++) native_sum += i;
+  const double native_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - native_start).count();
+
+  const bool code_ok = reason == static_cast<int>(rex::kernel::TitleExitReason::kNormalExit) &&
+                       sum == expected && marker == 0x600DF00Du;
+  char text[400];
   std::snprintf(text, sizeof text,
-                "exit %s, sum %08X (expected %08X), marker %08X, %.3f s for 200 million guest "
-                "instructions (%.0f million per second)",
+                "exit %s, sum %08X (expected %08X), marker %08X, %.3f s for the whole program "
+                "(the loop is 200 million guest instructions, recompiled code built with -O2); the "
+                "same loop native: %.3f s, sum %s",
                 reason < 0 ? "never came" : reason == 0 ? "normal" : "abnormal", sum, expected, marker,
-                seconds, seconds > 0 ? 200.0 / seconds : 0.0);
+                seconds, native_seconds, native_sum == expected ? "same" : "DIFFERENT");
   Say(std::string("  Test game: ") + text);
-  ReportResult(ok ? "PASS" : "FAIL", "Test game (our own Xbox 360 program)", text);
+  ReportResult(code_ok ? "PASS" : "FAIL", "Test game: recompiled code runs", text);
+
+  // Unix seconds from the FILETIME (100 ns units since 1601).
+  const long long unix_seconds = static_cast<long long>(system_time / 10000000ull) - 11644473600ll;
+  const bool kernel_ok = code_ok && frequency != 0 && unix_seconds > 1700000000ll &&
+                         create_status == 0 && wait_status == 0 && thread_value == 0x2468u &&
+                         thread_marker == 0x7EADu;
+  std::snprintf(text, sizeof text,
+                "performance frequency %u Hz; system time %lld (Unix seconds); ExCreateThread status "
+                "%08X; wait status %08X; second thread result %04X (expected 2468), marker %04X",
+                frequency, unix_seconds, create_status, wait_status, thread_value, thread_marker);
+  Say(std::string("  Test game: ") + text);
+  ReportResult(kernel_ok ? "PASS" : "FAIL", "Test game: Xbox kernel calls (time, thread, wait)", text);
+  const bool ok = code_ok && kernel_ok;
   return ok;
 #endif
 }

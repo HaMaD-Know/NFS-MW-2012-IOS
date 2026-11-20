@@ -92,6 +92,9 @@ void crashlog_install(const char *log_path);
 /** Sends stderr (e.g. MoltenVK's own messages) into the same log file. */
 void crashlog_redirect_stderr(void);
 
+/** On a crash, also copy the end of the newest .log file in this folder (ReXGlue's logs). */
+void crashlog_set_rexglue_logs(const char *folder);
+
 #ifdef __cplusplus
 }
 #endif

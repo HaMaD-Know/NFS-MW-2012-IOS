@@ -760,7 +760,8 @@ namespace {
 // image), then serves game: and d: from the disc image itself, so every data file, and the code
 // module hawaii.xex.dll the launcher loads, comes straight from the ISO. Runs until the title
 // exits; the window stays open while it runs.
-bool PlayGame(Host &app, const std::filesystem::path &iso, const std::filesystem::path &code_folder) {
+bool PlayGame(Host &app, const std::filesystem::path &root, const std::filesystem::path &iso,
+              const std::filesystem::path &code_folder) {
   rex::kernel::TitleRuntime title(kPPCImageConfig);
   auto &paths = title.GetTitlePaths();
   if (auto set = paths.entry.SetText(rex::SettingLayer::kTitle, "default.xex"); !set) {
@@ -816,6 +817,26 @@ bool PlayGame(Host &app, const std::filesystem::path &iso, const std::filesystem
     } else {
       Say("  Play: moved the mount " + entry.path + " behind the disc image");
     }
+  }
+  // The game keeps a cache of disc data on the console's hard drive (cache:\DISC\..., and
+  // cache:\PICS\...). ReXGlue mounts no cache: drive, so in shell 0.1.10 every cache access
+  // failed (hundreds of "no mount covers 'cache:\DISC'") before the game crashed on a null
+  // pointer. Give it a writable folder, as Xenia does (\CACHE, linked as cache:).
+  const std::filesystem::path cache_drive = root / "cache_drive";
+  std::error_code made;
+  std::filesystem::create_directories(cache_drive, made);
+  rex::filesystem::MountEntry cache;
+  cache.path = "\\CACHE";
+  cache.type = rex::filesystem::ProviderType::kHostDirectory;
+  cache.source = cache_drive;
+  cache.flags = rex::filesystem::MountFlags::kWritable;
+  if (auto cache_mounted = files.Mount(cache); !cache_mounted) {
+    Say("  Play: the cache: drive could not be mounted: " +
+        cache_mounted.error().GetDescription());
+  } else if (auto linked = files.Link("cache:", "\\CACHE"); !linked) {
+    Say("  Play: cache: could not be linked: " + linked.error().GetDescription());
+  } else {
+    Say("  Play: cache: is the folder " + cache_drive.string());
   }
   std::string order;
   for (const rex::filesystem::MountEntry &entry : files.GetMounts()) {
@@ -889,7 +910,7 @@ int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char
       if (!init) {
         Say("  Play: Init FAILED: " + init.error().GetDescription());
       } else if (!rex::app::IsShutdownRequested()) {
-        ok = PlayGame(app, iso_text ? iso_text : "", code_text ? code_text : "") ? 1 : 0;
+        ok = PlayGame(app, root, iso_text ? iso_text : "", code_text ? code_text : "") ? 1 : 0;
       }
       Say("  Play: Shutdown returned " + std::to_string(app.Shutdown()));
     }

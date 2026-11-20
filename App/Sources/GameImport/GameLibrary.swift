@@ -250,6 +250,8 @@ final class GameLibrary: ObservableObject {
         selftest_set_documents_dir(documents.path)
         setenv("MVK_CONFIG_LOG_LEVEL", "2", 1)
         crashlog_redirect_stderr()
+        // A crash then also copies the end of ReXGlue's own log into shell-log.txt.
+        crashlog_set_rexglue_logs(documents.appendingPathComponent("rexglue/logs").path)
         let access = url.startAccessingSecurityScopedResource()
         DispatchQueue.main.async {
             defer { if access { url.stopAccessingSecurityScopedResource() } }

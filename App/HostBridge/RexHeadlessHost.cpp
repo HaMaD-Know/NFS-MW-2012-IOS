@@ -948,16 +948,16 @@ bool PlayGame(Host &app, const std::filesystem::path &root, const std::filesyste
   int hang_reports = 0;
   while (exit_reason.load() < 0) {
     if (!app.RunFrame()) break;
-    // A hang report when no new game frame comes for 20 s, at most twice per run (the second
-    // shows whether the threads moved).
+    // A hang report when no new game frame comes for 5 s, at most twice per run (the second, 5 s
+    // later, shows whether the threads moved). 5 s so the player need not wait (shell 0.1.17).
     const unsigned long long frames = graphics.GetFrameStats().frame_count;
     const auto now = std::chrono::steady_clock::now();
     if (frames != last_frames) {
       last_frames = frames;
       last_frame_change = now;
-    } else if (frames > 0 && hang_reports < 2 && now - last_frame_change > std::chrono::seconds(20)) {
+    } else if (frames > 0 && hang_reports < 2 && now - last_frame_change > std::chrono::seconds(5)) {
       ++hang_reports;
-      Say("  Play: no new game frame for 20 s (frame " + std::to_string(frames) + ")");
+      Say("  Play: no new game frame for 5 s (frame " + std::to_string(frames) + ")");
       LogAllThreadStacks();
       last_frame_change = now;
     }
@@ -1009,6 +1009,12 @@ int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char
     const std::vector<std::string> args = {"--app.root=" + root.string(),
                                            "--app.cache_root=" + cache.string(),
                                            "--gpu.driver=vulkan",
+                                           // Shell 0.1.17: compile new shaders at once instead
+                                           // of drawing placeholders and skipping presentation
+                                           // ("Skipping Vulkan frame presentation due to async
+                                           // placeholder draw usage") — suspected in the hang at
+                                           // the cutscene -> driving switch.
+                                           "--gpu.xenos.async_shader_compilation=false",
                                            "--log.flush_level=debug",
                                            "--log.categories.kernel=debug",
                                            "--log.categories.xam=debug",

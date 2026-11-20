@@ -899,9 +899,20 @@ int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char
     // start, so each one stutters only the first time it is ever seen.
     const std::filesystem::path cache = root / "cache";
     std::filesystem::create_directories(cache, error);
+    // Diagnostics (shell 0.1.13): the game crashes after Press Start on a null pointer with no
+    // warning in the log. Log the system calls (kernel, xam, system), file access (filesystem)
+    // and every call to a stub (cpu: "dev" logs repeat calls too), and flush every line, so the
+    // crash report shows what the game asked for just before. Settings named before their
+    // module registers them wait for it (SettingsRegistry::Register).
     const std::vector<std::string> args = {"--app.root=" + root.string(),
                                            "--app.cache_root=" + cache.string(),
-                                           "--gpu.driver=vulkan"};
+                                           "--gpu.driver=vulkan",
+                                           "--log.flush_level=debug",
+                                           "--log.categories.kernel=debug",
+                                           "--log.categories.xam=debug",
+                                           "--log.categories.system=debug",
+                                           "--log.categories.filesystem=debug",
+                                           "--log.categories.cpu=dev"};
     int ok = 0;
     {
       Host app(true);

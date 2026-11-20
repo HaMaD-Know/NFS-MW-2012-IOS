@@ -21,7 +21,7 @@ void crashlog_set_rexglue_logs(const char *folder) {
   strlcpy(g_rexglue_logs, folder ? folder : "", sizeof g_rexglue_logs);
 }
 
-// Copies the end of the newest ReXGlue log (its fatal message and the warnings before it) into
+// Copies the end (64 KB) of the newest ReXGlue log (its fatal message and the warnings before it) into
 // shell-log.txt, so one file explains a crash. Plain open/read/write only.
 static void copy_rexglue_log_tail(void) {
   if (g_log_fd < 0 || !g_rexglue_logs[0]) return;
@@ -48,7 +48,7 @@ static void copy_rexglue_log_tail(void) {
   const int fd = open(newest, O_RDONLY);
   if (fd < 0) return;
   const off_t size = lseek(fd, 0, SEEK_END);
-  const off_t start = size > 12000 ? size - 12000 : 0;
+  const off_t start = size > 64000 ? size - 64000 : 0;
   lseek(fd, start, SEEK_SET);
   char line[1400];
   const int n = snprintf(line, sizeof line, "--- last %lld bytes of the ReXGlue log %s:\n",

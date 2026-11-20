@@ -75,6 +75,15 @@ int selftest_rexglue_window(selftest_log_fn log, int seconds);
  */
 int selftest_rexglue_all(selftest_log_fn log, int seconds);
 
+/** 1 when this app was built with the game's code (the private build only). */
+int selftest_rexglue_has_game(void);
+
+/**
+ * Starts the game (private build only): the launcher from code_folder, the game's files from the
+ * disc image iso. Main thread; returns when the game ends.
+ */
+int selftest_rexglue_play(selftest_log_fn log, const char *iso, const char *code_folder);
+
 // --- Diagnostics (CrashLog.c) ---
 
 /** Records signal, address and call stack of a crash into the log file at log_path. */

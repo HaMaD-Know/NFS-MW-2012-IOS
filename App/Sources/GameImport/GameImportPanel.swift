@@ -59,6 +59,13 @@ struct GameImportPanel: View {
             }
             .buttonStyle(.bordered)
             .disabled(library.busy)
+            if library.hasGame {
+                Button("▶ Play") { library.play() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(library.busy)
+                Text("Starts the game from your disc image. Connect the controller first. To stop, close the app.")
+                    .font(.caption2)
+            }
 
             Divider()
             Text("Testing (synthetic data, no game content)\(library.testManifestActive ? " — test manifest ON" : "")")

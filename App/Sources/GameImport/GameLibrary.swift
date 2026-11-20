@@ -219,6 +219,45 @@ final class GameLibrary: ObservableObject {
         }
     }
 
+    // MARK: Play (private build)
+
+    /// True when this app contains the game's translated code (only the private build does).
+    var hasGame: Bool {
+        selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
+        selftest_set_documents_dir(documents.path)
+        return selftest_rexglue_has_game() != 0
+    }
+
+    /// Starts the game: the launcher from Documents/Export (default.xex exported with "Export game
+    /// code"), every other file straight from the chosen disc image. Main thread, as UIKit
+    /// requires for the game's window; returns when the game ends.
+    func play() {
+        refreshTestManifest()
+        guard sourceIsImage, let url = resolveBookmark() else {
+            publish(.noGame, title: "Choose the disc image first",
+                    message: "Play needs your disc image (Choose Disc Image) and the exported game code (Export game code).",
+                    details: [])
+            return
+        }
+        let launcher = exportFolder.appendingPathComponent("default.xex")
+        guard FileManager.default.fileExists(atPath: launcher.path) else {
+            publish(.noGame, title: "Export the game code first",
+                    message: "Tap Export game code once; Play starts the game from it.", details: [])
+            return
+        }
+        log("Play: disc image \"\(url.lastPathComponent)\"")
+        selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
+        selftest_set_documents_dir(documents.path)
+        setenv("MVK_CONFIG_LOG_LEVEL", "2", 1)
+        crashlog_redirect_stderr()
+        let access = url.startAccessingSecurityScopedResource()
+        DispatchQueue.main.async {
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            let ok = selftest_rexglue_play(playLogSink, url.path, self.exportFolder.path) != 0
+            self.log("Play ended: \(ok ? "normally" : "with an error, see shell-log.txt")")
+        }
+    }
+
     // MARK: Test data
 
     /// Writes the synthetic test folder Documents/ImportTest/Game (no game content) and its test
@@ -316,4 +355,10 @@ final class GameLibrary: ObservableObject {
 private let gameCheckSink: gamecheck_log_fn = { line in
     guard let line else { return }
     GameLibrary.collected.append(String(cString: line))
+}
+
+/// Log callback for the game run: straight into shell-log.txt.
+private let playLogSink: selftest_log_fn = { line in
+    guard let line else { return }
+    ShellLog.shared.writeSync("[play] \(String(cString: line))")
 }

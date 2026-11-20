@@ -75,13 +75,28 @@ def main() -> int:
     flags += [f"-I{d}" for d in includes]
     os.makedirs(object_dir, exist_ok=True)
     print("Compiler flags:", " ".join(shlex.quote(a) for a in flags), flush=True)
-    for source in sources:
+    # Compile in parallel, one job per CPU core. An object newer than its source and newer than
+    # this flag set is kept, so a restored cache of game objects is not compiled again.
+    import concurrent.futures, hashlib
+    stamp = hashlib.sha256(" ".join(flags).encode()).hexdigest()[:16]
+    def compile_one(source):
         obj = os.path.join(object_dir, os.path.splitext(os.path.basename(source))[0] + ".o")
-        print("Compiling", os.path.basename(source), flush=True)
-        status = subprocess.call(flags + ["-c", source, "-o", obj], cwd=cwd)
-        if status != 0:
-            return status
-    return 0
+        mark = obj + "." + stamp
+        if os.path.exists(obj) and os.path.exists(mark):
+            return source, 0, "kept"
+        proc = subprocess.run(flags + ["-c", source, "-o", obj], cwd=cwd, capture_output=True, text=True)
+        if proc.returncode == 0:
+            open(mark, "w").close()
+        return source, proc.returncode, (proc.stdout + proc.stderr)[-4000:]
+    failed = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as pool:
+        for source, status, output in pool.map(compile_one, sources):
+            print(("Kept " if output == "kept" else "Compiled ") + os.path.basename(source)
+                  + ("" if status == 0 else " FAILED"), flush=True)
+            if status != 0:
+                print(output, flush=True)
+                failed = status
+    return failed
 
 
 if __name__ == "__main__":

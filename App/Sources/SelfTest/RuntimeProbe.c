@@ -261,3 +261,20 @@ int selftest_rexglue_all(selftest_log_fn log, int seconds) {
   snprintf(root, sizeof root, "%s/rexglue", g_documents);
   return start(root, log, seconds);
 }
+
+// --- Play the game (works only in the private build that has the game's code) -------------------
+
+int selftest_rexglue_has_game(void) {
+  typedef int (*HasFn)(void);
+  HasFn has = (HasFn)load_host(NULL, "nfsmw_rexhost_has_game");
+  return has ? has() : 0;
+}
+
+int selftest_rexglue_play(selftest_log_fn log, const char *iso, const char *code_folder) {
+  typedef int (*PlayFn)(const char *root, selftest_log_fn log, const char *iso, const char *code);
+  PlayFn play = (PlayFn)load_host(log, "nfsmw_rexhost_play");
+  if (!play) return 0;
+  char root[1200];
+  snprintf(root, sizeof root, "%s/rexglue", g_documents);
+  return play(root, log, iso, code_folder);
+}

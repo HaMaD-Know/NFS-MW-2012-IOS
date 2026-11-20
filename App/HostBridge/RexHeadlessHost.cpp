@@ -33,7 +33,14 @@
 
 // The project's own Xbox 360 test program (Tools/make_test_xex.py), recompiled by ReXGlue in CI.
 // Its generated code is compiled into this library only by ipad-runtime-app.yml.
-#if __has_include("testgame_init.h")
+// The game itself (private build only): the code ReXGlue generated from the player's own
+// default.xex is compiled in only by the private repository's build, never by the public one.
+#if __has_include("nfsmw_init.h")
+#include <rex/filesystem/file_system.h>
+#include <rex/filesystem/mount.h>
+#include "nfsmw_init.h"
+#define NFSMW_HAVE_GAME 1
+#elif __has_include("testgame_init.h")
 #include "testgame_init.h"
 #define NFSMW_HAVE_TEST_GAME 1
 #endif
@@ -741,4 +748,135 @@ extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_memory(const
 extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_all(const char *root, LogFn log,
                                                                          int seconds) {
   return Guarded(root, log, true, seconds, true);
+}
+
+// --- Play the game (private build) -------------------------------------------------------------
+
+namespace {
+
+#ifdef NFSMW_HAVE_GAME
+// Loads the game's launcher from code_folder (default.xex, exported from the player's own disc
+// image), then serves game: and d: from the disc image itself, so every data file, and the code
+// module hawaii.xex.dll the launcher loads, comes straight from the ISO. Runs until the title
+// exits; the window stays open while it runs.
+bool PlayGame(Host &app, const std::filesystem::path &iso, const std::filesystem::path &code_folder) {
+  rex::kernel::TitleRuntime title(kPPCImageConfig);
+  auto &paths = title.GetTitlePaths();
+  if (auto set = paths.entry.SetText(rex::SettingLayer::kTitle, "default.xex"); !set) {
+    Say("  Play: entry: " + set.error().GetDescription());
+    return false;
+  }
+  if (auto set = paths.game_root.SetText(rex::SettingLayer::kTitle, code_folder.string()); !set) {
+    Say("  Play: game_root: " + set.error().GetDescription());
+    return false;
+  }
+  Say("  Play: TitleRuntime::Load (launcher from " + code_folder.filename().string() + ")");
+  if (auto loaded = title.Load(); !loaded) {
+    Say("  Play: Load FAILED: " + loaded.error().GetDescription());
+    return false;
+  }
+  // Swap the game partition from the code folder to the disc image.
+  rex::filesystem::IFileSystem &files = title.GetFileSystem();
+  const std::string partition = "\Device\Harddisk0\Partition1";
+  if (auto removed = files.Unmount(partition); !removed) {
+    Say("  Play: unmount of the code folder failed: " + removed.error().GetDescription());
+  }
+  rex::filesystem::MountEntry disc;
+  disc.path = partition;
+  disc.type = rex::filesystem::ProviderType::kDiscImage;
+  disc.source = iso;
+  if (auto mounted = files.Mount(disc); !mounted) {
+    Say("  Play: the disc image could not be mounted: " + mounted.error().GetDescription());
+    title.Unload();
+    return false;
+  }
+  Say("  Play: game: now reads the disc image " + iso.filename().string());
+  std::atomic<int> exit_reason{-1};
+  auto guard = title.OnTitleExit([&exit_reason](rex::kernel::TitleExitReason reason) {
+    exit_reason.store(static_cast<int>(reason));
+  });
+  Say("  Play: Launch");
+  if (auto launched = title.Launch(); !launched) {
+    Say("  Play: Launch FAILED: " + launched.error().GetDescription());
+    title.Unload();
+    return false;
+  }
+  const auto start = std::chrono::steady_clock::now();
+  auto next_report = start + std::chrono::seconds(10);
+  rex::gpu::IGraphicsSystem &graphics = app.GetGraphics();
+  while (exit_reason.load() < 0) {
+    if (!app.RunFrame()) break;
+    if (std::chrono::steady_clock::now() >= next_report) {
+      next_report += std::chrono::seconds(10);
+      const auto stats = graphics.GetFrameStats();
+      char text[160];
+      std::snprintf(text, sizeof text, "  Play: %.0f s, game frames %llu, %.1f fps",
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
+                    static_cast<unsigned long long>(stats.frame_count), stats.fps);
+      Say(text);
+    }
+  }
+  Say("  Play: the game ended (exit reason " + std::to_string(exit_reason.load()) + ")");
+  title.Unload();
+  return true;
+}
+#endif
+
+int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char *code_text) {
+  g_log = log;
+#ifndef NFSMW_HAVE_GAME
+  (void)root_text;
+  (void)iso_text;
+  (void)code_text;
+  Say("  Play: this app has no game built in (the public app never does; only your private build)");
+  return 0;
+#else
+  static std::atomic<bool> ran{false};
+  if (ran.exchange(true)) {
+    Say("  ReXGlue already ran once in this launch; close and reopen the app");
+    return 0;
+  }
+  try {
+    const std::filesystem::path root = root_text ? root_text : ".";
+    std::error_code error;
+    std::filesystem::create_directories(root, error);
+    TellSDLMainIsReady();
+    const std::vector<std::string> args = {"--app.root=" + root.string(), "--gpu.driver=vulkan"};
+    int ok = 0;
+    {
+      Host app(true);
+      Say("  Play: Init");
+      const rex::Result<void> init = app.Init(rex::CLIArgList::Parse(args));
+      if (!init) {
+        Say("  Play: Init FAILED: " + init.error().GetDescription());
+      } else if (!rex::app::IsShutdownRequested()) {
+        ok = PlayGame(app, iso_text ? iso_text : "", code_text ? code_text : "") ? 1 : 0;
+      }
+      Say("  Play: Shutdown returned " + std::to_string(app.Shutdown()));
+    }
+    ShowRexLog(root / "logs", 300);
+    return ok;
+  } catch (const std::exception &failure) {
+    Say(std::string("  Play: C++ exception: ") + failure.what());
+  } catch (...) {
+    Say("  Play: unknown C++ exception");
+  }
+  return 0;
+#endif
+}
+
+}  // namespace
+
+extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_has_game(void) {
+#ifdef NFSMW_HAVE_GAME
+  return 1;
+#else
+  return 0;
+#endif
+}
+
+extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_play(const char *root, LogFn log,
+                                                                          const char *iso,
+                                                                          const char *code_folder) {
+  return PlayEntry(root, log, iso, code_folder);
 }

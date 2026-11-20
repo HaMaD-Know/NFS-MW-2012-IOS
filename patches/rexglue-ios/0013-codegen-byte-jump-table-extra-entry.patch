@@ -1,0 +1,20 @@
+diff --git a/src/codegen/function_scanner.cpp b/src/codegen/function_scanner.cpp
+index e4e449e..8f30465 100644
+--- a/src/codegen/function_scanner.cpp
++++ b/src/codegen/function_scanner.cpp
+@@ -441,6 +441,15 @@ std::optional<JumpTable> DetectJumpTable(DecodedBinary& decoded, const Limits& l
+   auto bounds =
+       ScanForBounds(decoded, limits, bctr_addr, containing_region, final_index_reg, func_start);
+   u32 entry_count = bounds.found ? bounds.max_entries : k_max_table_entries;
++  // iOS patch 0013: in NFS Most Wanted 2012 a byte offset table read here was one entry off
++  // from the table the game reads at run time (bctr 0x89815718: the run time target 0x8981576C,
++  // the last case, was never read). With patch 0012 the switch uses the run time target, so
++  // read one entry more for byte tables: that target then has a label and translated code. An
++  // extra entry that is not a valid target ends the table as before.
++  if (bounds.found && (table_type == JumpTableType::kByteOffset ||
++                       table_type == JumpTableType::kComputed)) {
++    entry_count += 1;
++  }
+ 
+   JumpTable jt;
+   jt.bctr_address = bctr_addr;

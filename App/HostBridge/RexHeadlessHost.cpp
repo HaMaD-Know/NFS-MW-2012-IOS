@@ -30,6 +30,8 @@
 #include <rex/ui/ui_system.h>
 
 #include <dlfcn.h>
+#include <mach/mach.h>
+#include <pthread.h>
 
 // The project's own Xbox 360 test program (Tools/make_test_xex.py), recompiled by ReXGlue in CI.
 // Its generated code is compiled into this library only by ipad-runtime-app.yml.
@@ -756,6 +758,90 @@ extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_all(const ch
 namespace {
 
 #ifdef NFSMW_HAVE_GAME
+// Hang report (shell 0.1.16): shell 0.1.15 stopped drawing at the end of the opening cutscene
+// (frames stuck, the last sound buffer looping), with no crash and nothing in the log. When no
+// frame comes for a while, log the call stack of every other thread: which game function each
+// one is in and what it waits for. Each thread is suspended only to copy its frame chain into
+// fixed buffers (no allocation or locks while any thread is suspended); names are looked up and
+// logged after all threads run again. A frame pointer is followed only inside its thread's stack.
+void LogAllThreadStacks() {
+  struct Snapshot {
+    char name[64];
+    unsigned count;
+    uint64_t addresses[40];
+  };
+  static Snapshot snapshots[128];
+  unsigned taken = 0;
+  thread_act_array_t threads = nullptr;
+  mach_msg_type_number_t thread_count = 0;
+  if (task_threads(mach_task_self(), &threads, &thread_count) != KERN_SUCCESS) {
+    Say("  Play: hang report: task_threads failed");
+    return;
+  }
+  const thread_t self = mach_thread_self();
+  for (mach_msg_type_number_t i = 0; i < thread_count && taken < 128; ++i) {
+    if (threads[i] == self) continue;
+    Snapshot &snap = snapshots[taken];
+    snap.name[0] = '\0';
+    snap.count = 0;
+    uint64_t stack_low = 0;
+    uint64_t stack_high = 0;
+    if (pthread_t thread = pthread_from_mach_thread_np(threads[i])) {
+      pthread_getname_np(thread, snap.name, sizeof snap.name);
+      stack_high = reinterpret_cast<uint64_t>(pthread_get_stackaddr_np(thread));
+      stack_low = stack_high - pthread_get_stacksize_np(thread);
+    }
+    if (thread_suspend(threads[i]) != KERN_SUCCESS) continue;
+    arm_thread_state64_t state;
+    mach_msg_type_number_t state_count = ARM_THREAD_STATE64_COUNT;
+    if (thread_get_state(threads[i], ARM_THREAD_STATE64, reinterpret_cast<thread_state_t>(&state),
+                         &state_count) == KERN_SUCCESS) {
+      snap.addresses[snap.count++] = arm_thread_state64_get_pc(state);
+      snap.addresses[snap.count++] = arm_thread_state64_get_lr(state);
+      uint64_t frame = arm_thread_state64_get_fp(state);
+      while (snap.count < 40 && frame != 0 && (frame & 15) == 0 && frame >= stack_low &&
+             frame + 16 <= stack_high) {
+        const uint64_t *record = reinterpret_cast<const uint64_t *>(frame);
+        const uint64_t next = record[0];
+        const uint64_t ret = record[1];
+        if (ret == 0) break;
+        snap.addresses[snap.count++] = ret;
+        if (next <= frame) break;
+        frame = next;
+      }
+    }
+    thread_resume(threads[i]);
+    ++taken;
+  }
+  for (mach_msg_type_number_t i = 0; i < thread_count; ++i) {
+    mach_port_deallocate(mach_task_self(), threads[i]);
+  }
+  vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(threads),
+                thread_count * sizeof(thread_t));
+  mach_port_deallocate(mach_task_self(), self);
+
+  Say("  Play: hang report, " + std::to_string(taken) + " other threads:");
+  for (unsigned t = 0; t < taken; ++t) {
+    const Snapshot &snap = snapshots[t];
+    Say("  thread " + std::to_string(t) + " '" + snap.name + "':");
+    for (unsigned f = 0; f < snap.count; ++f) {
+      Dl_info info{};
+      char line[300];
+      const uint64_t address = snap.addresses[f];
+      if (dladdr(reinterpret_cast<const void *>(address), &info) && info.dli_sname) {
+        const char *library = info.dli_fname ? std::strrchr(info.dli_fname, '/') : nullptr;
+        std::snprintf(line, sizeof line, "    %s+%llu (%s)", info.dli_sname,
+                      static_cast<unsigned long long>(
+                          address - reinterpret_cast<uint64_t>(info.dli_saddr)),
+                      library ? library + 1 : "?");
+      } else {
+        std::snprintf(line, sizeof line, "    0x%llx", static_cast<unsigned long long>(address));
+      }
+      Say(line);
+    }
+  }
+}
+
 // Loads the game's launcher from code_folder (default.xex, exported from the player's own disc
 // image), then serves game: and d: from the disc image itself, so every data file, and the code
 // module hawaii.xex.dll the launcher loads, comes straight from the ISO. Runs until the title
@@ -857,9 +943,25 @@ bool PlayGame(Host &app, const std::filesystem::path &root, const std::filesyste
   const auto start = std::chrono::steady_clock::now();
   auto next_report = start + std::chrono::seconds(10);
   rex::gpu::IGraphicsSystem &graphics = app.GetGraphics();
+  unsigned long long last_frames = 0;
+  auto last_frame_change = start;
+  int hang_reports = 0;
   while (exit_reason.load() < 0) {
     if (!app.RunFrame()) break;
-    if (std::chrono::steady_clock::now() >= next_report) {
+    // A hang report when no new game frame comes for 20 s, at most twice per run (the second
+    // shows whether the threads moved).
+    const unsigned long long frames = graphics.GetFrameStats().frame_count;
+    const auto now = std::chrono::steady_clock::now();
+    if (frames != last_frames) {
+      last_frames = frames;
+      last_frame_change = now;
+    } else if (frames > 0 && hang_reports < 2 && now - last_frame_change > std::chrono::seconds(20)) {
+      ++hang_reports;
+      Say("  Play: no new game frame for 20 s (frame " + std::to_string(frames) + ")");
+      LogAllThreadStacks();
+      last_frame_change = now;
+    }
+    if (now >= next_report) {
       next_report += std::chrono::seconds(10);
       const auto stats = graphics.GetFrameStats();
       char text[160];

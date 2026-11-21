@@ -1,0 +1,79 @@
+diff --git a/src/gpu/xenos/command_processor.cpp b/src/gpu/xenos/command_processor.cpp
+index a2abafd..e6c54e0 100644
+--- a/src/gpu/xenos/command_processor.cpp
++++ b/src/gpu/xenos/command_processor.cpp
+@@ -701,10 +701,46 @@ bool CommandProcessor::ExecutePacketType2([[maybe_unused]] memory::RingBuffer* r
+   return true;
+ }
+ 
++namespace {
++// iOS patch 0017: the last type 3 packets (opcode, count, first data words), so a stuck
++// WAIT_REG_MEM can show which packet before it should have written the word it waits for.
++// Only the command processor thread uses it.
++struct RecentPacket {
++  u32 opcode = 0;
++  u32 count = 0;
++  u32 data[3] = {};
++};
++RecentPacket g_recent_packets[64];
++u32 g_recent_packet_next = 0;
++
++void LogRecentPackets() {
++  REXGPU_WARN("GPU: the last 64 type 3 packets before this wait, oldest first:");
++  for (u32 i = 0; i < 64; ++i) {
++    const RecentPacket& packet = g_recent_packets[(g_recent_packet_next + i) % 64];
++    if (!packet.count) {
++      continue;
++    }
++    REXGPU_WARN("GPU:   opcode 0x{:02X} count {} data 0x{:08X} 0x{:08X} 0x{:08X}", packet.opcode,
++                packet.count, packet.data[0], packet.data[1], packet.data[2]);
++  }
++}
++}  // namespace
++
+ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, u32 packet) {
+   u32 opcode = (packet >> 8) & 0x7F;
+   u32 count = ((packet >> 16) & 0x3FFF) + 1;
+   auto data_start_offset = reader->GetReadOffset();
++  {
++    RecentPacket& recent = g_recent_packets[g_recent_packet_next++ % 64];
++    recent.opcode = opcode;
++    recent.count = count;
++    if (reader->GetReadCount() >= count * sizeof(u32)) {
++      for (u32 i = 0; i < 3; ++i) {
++        recent.data[i] = i < count ? reader->ReadAndSwap<u32>() : 0;
++      }
++      reader->SetReadOffset(data_start_offset);
++    }
++  }
+ 
+   if (reader->GetReadCount() < count * sizeof(u32)) {
+     REXGPU_FAIL(false, "ExecutePacketType3 overflow (read count {:08X}, packet count {:08X})",
+@@ -845,7 +881,14 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, u32 packet
+       break;
+     }
+ 
+-    default:
++    default: {
++      // iOS patch 0017: visible once per opcode (was a hidden dev level line).
++      static bool warned[128] = {};
++      if (!warned[opcode]) {
++        warned[opcode] = true;
++        REXGPU_WARN("Unimplemented GPU opcode 0x{:02X} with count {} (skipped)", opcode, count);
++      }
++    }
+       REXGPU_DEV("Unimplemented GPU opcode 0x{:02X} with count {}\n", opcode, count);
+       REX_ASSERT_ALWAYS();
+       reader->AdvanceRead(count * sizeof(u32));
+@@ -1018,6 +1061,11 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+       continue;
+     }
+     if (!matched && std::chrono::steady_clock::now() >= next_wait_log) {
++      static bool packets_logged = false;  // iOS patch 0017
++      if (!packets_logged) {
++        packets_logged = true;
++        LogRecentPackets();
++      }
+       next_wait_log += std::chrono::seconds(10);
+       REXGPU_WARN(
+           "WAIT_REG_MEM waiting {} s on {} 0x{:08X}: function {} ref 0x{:08X} mask 0x{:08X}, "

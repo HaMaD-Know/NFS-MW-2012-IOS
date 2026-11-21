@@ -1,0 +1,57 @@
+diff --git a/src/gpu/xenos/vulkan/command_processor.cpp b/src/gpu/xenos/vulkan/command_processor.cpp
+index 97d4eff..901261d 100644
+--- a/src/gpu/xenos/vulkan/command_processor.cpp
++++ b/src/gpu/xenos/vulkan/command_processor.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>  // iOS patch 0015
+ #include <algorithm>
+ #include <array>
+ #include <bit>
+@@ -4146,6 +4147,24 @@ bool VulkanCommandProcessor::IssueCopyReadbackResolvePath() {
+     return true;
+   }
+ 
++  // iOS patch 0015: read back only small resolves. NFS Most Wanted 2012 waits (WAIT_REG_MEM) on
++  // a flag it resolves to memory, so that needs readback, but a full readback copies whole
++  // resolve ranges from the host copy of guest memory back over guest memory, and right after
++  // the first flag readbacks the title called a null callback from an object list, as if newer
++  // guest data was overwritten. Large resolves (full screen render to texture) stay on the host
++  // GPU, which also saves the readback cost. The first 64 small readbacks are logged.
++  constexpr u32 kMaxReadbackLength = 64 * 1024;
++  if (written_length > kMaxReadbackLength) {
++    return true;
++  }
++  {
++    static std::atomic<u32> logged_readbacks{0};
++    if (logged_readbacks.fetch_add(1, std::memory_order_relaxed) < 64) {
++      REXGPU_WARN("Resolve readback to guest 0x{:08X}, {} bytes", written_address,
++                  written_length);
++    }
++  }
++
+   if (!GetPhysicalForWrite(physical_memory_, written_address, written_length)) {
+     return true;
+   }
+diff --git a/src/ppc/kernel_hook.cpp b/src/ppc/kernel_hook.cpp
+index 190d7c1..595f571 100644
+--- a/src/ppc/kernel_hook.cpp
++++ b/src/ppc/kernel_hook.cpp
+@@ -18,8 +18,13 @@ const KernelHooks* GetHooks() {
+ }
+ 
+ void InvalidFunctionTrap(PPCContext& ctx, u8* /*base*/) {
+-  REXCPU_FATAL("Call to invalid or unregistered function at guest address 0x{:08X}",
+-               ctx.last_indirect_target);
++  // iOS patch 0015: also the return address and the argument and object registers, so the
++  // object behind a null callback can be found.
++  REXCPU_FATAL(
++      "Call to invalid or unregistered function at guest address 0x{:08X} (lr 0x{:08X}, r1 "
++      "0x{:08X}, r3 0x{:08X}, r4 0x{:08X}, r5 0x{:08X}, r29 0x{:08X}, r30 0x{:08X}, r31 0x{:08X})",
++      ctx.last_indirect_target, static_cast<u32>(ctx.lr), ctx.r1.u32, ctx.r3.u32, ctx.r4.u32,
++      ctx.r5.u32, ctx.r29.u32, ctx.r30.u32, ctx.r31.u32);
+ }
+ 
+ }  // namespace

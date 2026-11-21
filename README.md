@@ -14,16 +14,19 @@ graphics and game controllers for input.
 - **No game files, ever.** No executables, data, disc images, title updates, textures,
   audio or video. Each user supplies their own legally owned copy.
 - **No code generated from a game executable.** Recompiler output is derived from the
-  publisher's code. It stays on the machine that produced it and is never committed,
-  uploaded to CI or released. `.gitignore` enforces this.
+  publisher's code. It is never committed to this repository, built by its public CI or
+  released. `.gitignore` enforces this. Each player generates it from their own copy in their
+  own **private** repository ([`Kit/README.md`](Kit/README.md)), and it stays there.
 - **No DRM circumvention**, and no help obtaining game files.
 - **Bring Your Own Game.** The app imports the user's own Xbox 360 game data through the iPadOS
-  Files picker, verifies it, and keeps it on the device. User files are never uploaded
-  anywhere. The game's recompiled code is a *personal module* built by each user from their
-  own copy; it is never in the public IPA. See
+  Files picker, verifies it, and keeps it on the device. The app itself uploads nothing. The
+  game's recompiled code is a *personal build* made by each player from the two code files of
+  their own copy, in their own private GitHub repository; it is never in the public IPA. See
+  [`Kit/README.md`](Kit/README.md),
   [`Documentation/BYOG_DESIGN.md`](Documentation/BYOG_DESIGN.md) and
   [`Documentation/SUPPORTED_GAME_DATA.md`](Documentation/SUPPORTED_GAME_DATA.md).
-  **Planned; not implemented yet.**
+  Import, verification, export and the personal build are implemented; the game is not yet
+  stable enough to play.
 - Not affiliated with or endorsed by Electronic Arts or Criterion Games. *Need for Speed*
   and *Most Wanted* are trademarks of Electronic Arts Inc.
 

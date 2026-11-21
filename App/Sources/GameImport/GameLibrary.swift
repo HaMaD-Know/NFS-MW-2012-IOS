@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// "Import Your Game" (Milestone G1, BYOG_DESIGN.md). The user picks their own game folder with
@@ -186,7 +187,7 @@ final class GameLibrary: ObservableObject {
             lines += more
             for line in lines { self.log(line) }
             self.publish(.noGame, title: ok ? "✓ Game code exported (2 files)" : "✗ Export failed",
-                         message: ok ? "Saved in Files › NFS MW Shell › Export: default.xex and hawaii.xex.dll. Upload only these two files to your private GitHub project, then delete them here."
+                         message: ok ? "Saved in Files › NFS MW Shell › Export: default.xex and hawaii.xex.dll. Upload only these two files to your own PRIVATE GitHub repository (build guide: Kit/README.md on the project page). Never share them publicly."
                                      : "The file could not be copied. See the details.",
                          details: lines)
         }
@@ -245,6 +246,10 @@ final class GameLibrary: ObservableObject {
                     message: "Tap Export game code once; Play starts the game from it.", details: [])
             return
         }
+        if let problem = moduleMismatch() {
+            publish(.noGame, title: "✗ This app was built for another copy", message: problem, details: [])
+            return
+        }
         log("Play: disc image \"\(url.lastPathComponent)\"")
         selftest_set_frameworks_dir(Bundle.main.privateFrameworksPath ?? "")
         selftest_set_documents_dir(documents.path)
@@ -258,6 +263,42 @@ final class GameLibrary: ObservableObject {
             let ok = selftest_rexglue_play(playLogSink, url.path, self.exportFolder.path) != 0
             self.log("Play ended: \(ok ? "normally" : "with an error, see shell-log.txt")")
         }
+    }
+
+    /// The binding check (BYOG_DESIGN.md §3). A personal build records the SHA-256 of the
+    /// default.xex and hawaii.xex.dll its game code was translated from (GameModule.txt in the
+    /// app). Play goes ahead only when the exported files are those same files. nil means OK.
+    private func moduleMismatch() -> String? {
+        guard let record = Bundle.main.url(forResource: "GameModule", withExtension: "txt"),
+              let text = try? String(contentsOf: record, encoding: .utf8) else {
+            log("Play: this app has no record of the game files it was built from; not checked")
+            return nil
+        }
+        for line in text.split(whereSeparator: \.isNewline) where !line.hasPrefix("#") {
+            let parts = line.split(separator: " ")
+            guard parts.count == 2, parts[0].hasSuffix(".xex") || parts[0].hasSuffix(".dll") else { continue }
+            let name = String(parts[0])
+            let file = exportFolder.appendingPathComponent(name)
+            guard let actual = GameLibrary.sha256(of: file) else {
+                return "\(name) is missing from Files › NFS MW Shell › Export. Tap Export game code again."
+            }
+            if actual != String(parts[1]).lowercased() {
+                log("Play: \(name) is \(actual), this app was built for \(parts[1])")
+                return "This app's game code was built from a different copy of \(name). Export the game code from the disc this app was built for, or build a personal app from this disc."
+            }
+        }
+        log("Play: the exported game files match this app's game code")
+        return nil
+    }
+
+    private static func sha256(of url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try? handle.read(upToCount: 4 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: Test data

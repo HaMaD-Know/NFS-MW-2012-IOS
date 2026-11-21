@@ -1,0 +1,22 @@
+# Copy this file into YOUR OWN PRIVATE repository as .github/workflows/build-my-game.yml
+# (see Kit/README.md). It builds your personal NFS MW iPad app from the two code files of your
+# own copy of the game, which you put in that repository's game folder.
+#
+# Never use it in a public repository: the game files and everything built from them are yours
+# only. The build refuses to run in a public repository.
+name: Build my NFS MW iPad app
+
+on:
+  workflow_dispatch:        # Actions › Build my NFS MW iPad app › Run workflow
+  push:
+    paths:
+      - "game/default.xex"
+      - "game/hawaii.xex.dll"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    uses: HaMaD-Know/NFS-MW-2012-IOS/.github/workflows/personal-game-build.yml@main

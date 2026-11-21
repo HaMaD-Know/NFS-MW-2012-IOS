@@ -305,6 +305,9 @@ jobs:
           cp "$RUNNER_TEMP/libnfsmwhost.dylib" "$fw/"
           if [ -d gamecode/default ]; then
             cp "$RUNNER_TEMP"/libnfsmw_*.dylib "$fw/"   # the game's code module (private build)
+            # Which game files this code was built from (fingerprints only; personal builds and
+            # private builds that record it). Play compares them with the exported files.
+            if [ -f gamecode/game_module.txt ]; then cp gamecode/game_module.txt "$app/GameModule.txt"; fi
           else
             # The project's own test program (not game data), loaded by ReXGlue as game:\default.xex.
             mkdir -p "$app/TestGame" && cp "$TESTGAME/default.xex" "$app/TestGame/"

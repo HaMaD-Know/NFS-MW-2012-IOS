@@ -51,7 +51,7 @@ struct GameImportPanel: View {
             .disabled(library.busy)
 
             Divider()
-            Text("For the private build (uses the chosen folder or disc image)")
+            Text("For your personal build (uses the chosen folder or disc image)")
                 .font(.caption)
             HStack {
                 Button("Export game code") { library.exportMainFile() }
@@ -65,6 +65,10 @@ struct GameImportPanel: View {
                     .disabled(library.busy)
                 Text("Starts the game from your disc image. Connect the controller first. To stop, close the app.")
                     .font(.caption2)
+            } else {
+                Text("This app has no game code. Build your personal app once from your own copy: tap Export game code, then follow Kit/README.md on the project page. The game code never goes into the public app.")
+                    .font(.caption2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()

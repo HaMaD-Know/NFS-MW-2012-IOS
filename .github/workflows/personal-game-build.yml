@@ -1,0 +1,218 @@
+# Personal game build (Bring Your Own Game, Documentation/BYOG_DESIGN.md §3).
+#
+# This workflow holds no game content. It runs only when a player calls it from THEIR OWN PRIVATE
+# repository that holds the two code files of THEIR OWN copy of the game (game/default.xex and
+# game/hawaii.xex.dll, exported by the app's "Export game code" button). It:
+#   1. translates those two files into C++ with ReXGlue (Linux),
+#   2. builds the iPad app with that code (macOS, the public app's own recipe),
+#   3. leaves the personal IPA as an artifact of the player's private run (7 days).
+# The translated code and the IPA are derived from the player's copy: they stay in the player's
+# private repository and must never be published. See Kit/README.md for the player's steps.
+#
+# Cost (the player's own GitHub minutes): the first run builds the translator and compiles all of
+# the game's code, roughly 15 Linux and 20 macOS minutes. Later runs with the same files reuse both.
+name: Personal game build
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: read   # the app build downloads this run's translated code
+
+jobs:
+  translate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Check out the player's private repository
+        uses: actions/checkout@v4
+        with:
+          path: mine
+
+      - name: Check out the public project (patches and the pinned ReXGlue version)
+        uses: actions/checkout@v4
+        with:
+          repository: HaMaD-Know/NFS-MW-2012-IOS
+          path: project
+
+      - name: Refuse to run in a public repository
+        env:
+          VISIBILITY: ${{ github.event.repository.visibility }}
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if [ "$PRIVATE" != "true" ]; then
+            echo "::error title=This repository is public::The game's code files and everything built from them must stay private. Make this repository private (Settings › General › Danger Zone › Change visibility), delete the game files from its history, then run again."
+            exit 1
+          fi
+
+      - name: Check the game's code files
+        id: game
+        run: |
+          missing=""
+          for f in default.xex hawaii.xex.dll; do
+            [ -f "mine/game/$f" ] || missing="$missing game/$f"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error title=Game files missing::Not found:$missing. In the app, choose your disc image, tap Export game code, then upload the two files from Files › NFS MW Shell › Export into the game folder of this repository."
+            exit 1
+          fi
+          # The game's title ID sits in the XEX2 header (plain, not encrypted): 0x45410961.
+          if ! python3 - mine/game/default.xex <<'EOF'
+          import struct, sys
+          data = open(sys.argv[1], "rb").read(0x100000)
+          if data[:4] != b"XEX2":
+              sys.exit("default.xex is not an Xbox 360 executable")
+          count = struct.unpack(">I", data[0x14:0x18])[0]
+          for i in range(count):
+              key, value = struct.unpack(">II", data[0x18 + 8 * i:0x20 + 8 * i])
+              if key == 0x00040006:  # execution info: media ID, version, base version, title ID
+                  title = struct.unpack(">I", data[value + 12:value + 16])[0]
+                  if title != 0x45410961:
+                      sys.exit("default.xex is title %08X, not Need for Speed: Most Wanted (2012) (45410961)" % title)
+                  print("Title ID 45410961: Need for Speed: Most Wanted (2012)")
+                  sys.exit(0)
+          sys.exit("default.xex has no execution info")
+          EOF
+          then
+            echo "::error title=Wrong game file::game/default.xex is not Need for Speed: Most Wanted (2012)."
+            exit 1
+          fi
+          ( cd mine/game && sha256sum default.xex hawaii.xex.dll )
+
+      # The translation depends only on the two files, the manifest, the ReXGlue version and the
+      # translator patches. Their fingerprint names a cache entry in the player's repository.
+      - name: Prepare the files and the manifest
+        id: inputs
+        run: |
+          ref=$(sed -n 's/^ *REXGLUE_REF: *\([0-9a-f]\{40\}\).*/\1/p' project/.github/workflows/ipad-runtime-app.yml | head -1)
+          test -n "$ref" || { echo "::error::No ReXGlue version found in the public app recipe"; exit 1; }
+          echo "REXGLUE_REF=$ref" >> "$GITHUB_ENV"
+          work="$RUNNER_TEMP/nfsmw"; mkdir -p "$work"
+          cp mine/game/default.xex mine/game/hawaii.xex.dll "$work/"
+          {
+            echo '[project]'
+            echo 'name = "nfsmw"'
+            echo
+            echo '[entrypoint]'
+            echo 'file_path = "default.xex"'
+            echo 'out_directory_path = "generated/default"'
+            echo
+            echo '[[modules]]'
+            echo 'file_path = "hawaii.xex.dll"'
+            echo "guest_path = 'game:\\hawaii.xex.dll'"
+            echo 'out_directory_path = "generated/hawaii"'
+            echo 'project_name = "hawaii"'
+          } > "$work/nfsmw_manifest.toml"
+          patches="$PWD/project/patches/rexglue-ios"
+          codegen=$(cd "$patches" && ls *codegen*.patch | sort)
+          echo "CODEGEN_PATCHES=$(echo $codegen)" >> "$GITHUB_ENV"
+          echo "PATCHES=$patches" >> "$GITHUB_ENV"
+          inputs=$(cd "$work" && sha256sum default.xex hawaii.xex.dll nfsmw_manifest.toml; \
+                   cd "$patches" && sha256sum $codegen)
+          echo "$inputs"
+          echo "fingerprint=$(printf '%s\n%s\n' "$ref" "$inputs" | sha256sum | cut -c1-32)" >> "$GITHUB_OUTPUT"
+
+      - name: Reuse an earlier translation with the same inputs
+        id: reuse
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/nfsmw/generated
+          key: nfsmw-generated-${{ steps.inputs.outputs.fingerprint }}
+
+      - name: Check out ReXGlue SDK at the pinned commit
+        if: steps.reuse.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: rexglue/rexglue-sdk
+          ref: ${{ env.REXGLUE_REF }}
+          submodules: recursive
+          path: rexglue-sdk
+
+      - name: Apply the translator patches
+        if: steps.reuse.outputs.cache-hit != 'true'
+        working-directory: rexglue-sdk
+        run: |
+          for p in $CODEGEN_PATCHES; do
+            echo "== $p"; git apply --whitespace=nowarn "$PATCHES/$p"
+          done
+
+      - name: Set up toolchain
+        if: steps.reuse.outputs.cache-hit != 'true'
+        uses: ./rexglue-sdk/.github/actions/setup-toolchain
+        with:
+          platform: linux-amd64
+
+      - name: Vulkan Memory Allocator header (pinned, checksum-verified)
+        if: steps.reuse.outputs.cache-hit != 'true'
+        env:
+          VMA_REF: v3.3.0
+          VMA_SHA256: 90ce12fc4a2466235a09ae02905dd0c13aee80c1bbf11b331ab61230c2ceb112
+        run: |
+          inc="$RUNNER_TEMP/vma/include"; mkdir -p "$inc"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$inc/vk_mem_alloc.h" \
+            "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/${VMA_REF}/include/vk_mem_alloc.h"
+          echo "${VMA_SHA256}  $inc/vk_mem_alloc.h" | sha256sum -c -
+          echo "VMA_INC=$inc" >> "$GITHUB_ENV"
+
+      - name: Build ReXGlue's translator (Linux, Release)
+        if: steps.reuse.outputs.cache-hit != 'true'
+        working-directory: rexglue-sdk
+        run: |
+          log="$RUNNER_TEMP/build.txt"
+          if ! { cmake --preset linux-amd64 -DREXGLUE_BUILD_TESTS=OFF -DREXGLUE_ENABLE_TRACY=OFF \
+                   -DREXGLUE_VMA_INCLUDE_DIR="$VMA_INC" \
+                 && cmake --build out/build/linux-amd64 --config Release --parallel; } > "$log" 2>&1; then
+            tail -60 "$log"
+            echo "::error title=Translator build failed::$(grep -E 'error' "$log" | head -20 | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | cut -c1-3500)"
+            exit 1
+          fi
+          tail -3 "$log"
+          rexglue=$(find "$PWD/out" -type f -name rexglue -perm -u+x | head -1)
+          test -n "$rexglue" || { echo "::error::rexglue was not built"; exit 1; }
+          echo "REXGLUE=$rexglue" >> "$GITHUB_ENV"
+
+      - name: Translate the game's code
+        id: translate
+        if: steps.reuse.outputs.cache-hit != 'true'
+        run: |
+          work="$RUNNER_TEMP/nfsmw"
+          ( cd "$work" && "$REXGLUE" codegen nfsmw_manifest.toml ) > "$RUNNER_TEMP/codegen.txt" 2>&1; status=$?
+          # Only counts and the translator's last messages; never the generated code itself.
+          grep -vE '^module .* loaded from' "$RUNNER_TEMP/codegen.txt" | tail -40
+          for out in "$work"/generated/*; do
+            [ -d "$out" ] && echo "$(basename "$out"): $(ls "$out"/*.cpp 2>/dev/null | wc -l) C++ files, $(du -sh "$out" | cut -f1)"
+          done
+          exit $status
+
+      - name: Keep the translation for later runs with the same inputs
+        if: steps.reuse.outputs.cache-hit != 'true' && steps.translate.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/nfsmw/generated
+          key: nfsmw-generated-${{ steps.inputs.outputs.fingerprint }}
+
+      # The binding (BYOG_DESIGN.md §3): the app records which files its game code came from, and
+      # Play refuses a disc whose exported files differ. Fingerprints only, no content.
+      - name: Record which game files this build is for
+        run: |
+          gen="$RUNNER_TEMP/nfsmw/generated"
+          {
+            echo "# nfsmw-game-module 1"
+            ( cd mine/game && sha256sum default.xex hawaii.xex.dll ) | awk '{print $2" "$1}'
+            echo "rexglue $REXGLUE_REF"
+          } > "$gen/game_module.txt"
+          cat "$gen/game_module.txt"
+
+      - name: Hand the translated code to the app build (private, 1 day)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfsmw-generated
+          path: ${{ runner.temp }}/nfsmw/generated
+          retention-days: 1
+
+  app:
+    needs: translate
+    uses: HaMaD-Know/NFS-MW-2012-IOS/.github/workflows/ipad-runtime-app.yml@main
+    with:
+      game_code_artifact: nfsmw-generated

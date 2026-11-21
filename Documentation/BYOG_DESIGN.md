@@ -14,6 +14,7 @@ it has been implemented and tested on a real iPad.
 | R4 | The app checks the data for required files, completeness and compatibility, and shows the result |
 | R5 | Missing files and incompatible versions get clear, specific messages |
 | R6 | Game data lives in, or is accessed from, an app-managed location, and never leaves the device: no uploads to GitHub, analytics or any server |
+| R6a | Exception, chosen by the player (2026-11-21): for the personal build, the player uploads the two code files (`default.xex`, `hawaii.xex.dll`) to their **own private** GitHub repository. The app never uploads anything itself |
 | R7 | The user can select the game again if it was moved, replaced or deleted |
 | R8 | Original assets are used as supplied; no silent re-encoding, resizing or quality reduction |
 | R9 | No DRM bypass or authentication circumvention |
@@ -188,9 +189,14 @@ States: `noGame` · `verifying` · `incompatible(reason)` · `incomplete(missing
 
 | Component | State |
 |---|---|
-| Import screen, picker, bookmarks | Not implemented |
-| Verification engine | Not implemented |
-| Manifest for the supported edition | Not created (needs the owner's copy, N1-c) |
-| Game-module loader and binding check | Not implemented |
-| Personal module build | Not designed beyond §3; build route undecided |
-| Any of the above tested on an iPad | **No** |
+| Import screen, picker, bookmarks | Implemented (`App/Sources/GameImport`); folder and disc image, read in place. Tested on an iPad with a disc image |
+| Verification engine | Implemented (`GameCheck.c`): structure, title ID, manifest check. Real copies are identified; no edition manifest shipped yet |
+| Manifest for the supported edition | Not created yet (the app's *Make file list* writes one) |
+| Export of the two code files | Implemented (*Export game code*: `default.xex`, `hawaii.xex.dll`); tested on an iPad |
+| Personal module build | **Decided (2026-11-21): the player's own private GitHub repository.** `Kit/build-my-game.yml` calls the public reusable workflow `.github/workflows/personal-game-build.yml`, which translates the player's two files (Linux) and builds the personal IPA with the public app recipe (macOS). It refuses to run in a public repository and never prints generated code. Not yet run by anyone but the owner's equivalent private workflow |
+| Binding check | Implemented: the personal build writes `GameModule.txt` (SHA-256 of the two files) into the app; *Play* refuses exported files that differ. Not yet tested on an iPad |
+| How the module reaches the device | The personal build is a whole IPA (public app + game code) that replaces the public app; no framework injection needed |
+| Player guide | `Kit/README.md` |
+
+**Decision on §7's open item (owner, 2026-11-20):** ReXGlue's loader may decode the
+executable's container at codegen time and run time, for the player's own copy only.

@@ -1,0 +1,207 @@
+diff --git a/src/gpu/xenos/command_processor.cpp b/src/gpu/xenos/command_processor.cpp
+index 0a026ad..1f68dbf 100644
+--- a/src/gpu/xenos/command_processor.cpp
++++ b/src/gpu/xenos/command_processor.cpp
+@@ -1078,46 +1078,26 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+     }
+     // iOS patch 0016: a memory word that a large resolve (not read back) wrote on the host GPU
+     // only: copy that word to guest memory and test again, on the first miss and every 16th.
+-    if (!matched && is_memory && (wait_readback_tries++ % 16) == 0 &&
+-        ReadbackWaitedMemory(poll_reg_addr & ~static_cast<u32>(0x3))) {
++    // iOS patch 0021: before a memory wait sleeps, copy the memory exports made since the last
++    // copy to guest memory (one batch, the wait's flag and the data it guards) and test again.
++    if (!matched && is_memory && (wait_readback_tries++ % 16) == 0 && FlushPendingGpuWrites()) {
+       continue;
+     }
+-    // iOS patch 0020: memory export results reach guest memory late (fast readback) or not at
+-    // all; when the host GPU's copy of the word already satisfies the wait, store it to guest
+-    // memory and pass (on the first miss and every 16th). It is copied only when it ends the
+-    // wait, so a newer guest value is never replaced with a stale one otherwise.
+-    if (!matched && is_memory && (wait_readback_tries % 16) == 1) {
+-      const u32 word_address = poll_reg_addr & ~static_cast<u32>(0x3);
+-      u32 stored = 0;
+-      if (ReadHostGpuWord(word_address, &stored)) {
+-        const u32 gpu_value = xenos::GPUSwap(rex::byte_swap(stored),
+-                                             static_cast<xenos::Endian>(poll_reg_addr & 0x3));
+-        if (wait_test(gpu_value)) {
+-          StoreReleaseHost(physical_memory_, word_address, stored);
+-          static u32 copied_logged = 0;
+-          if (copied_logged++ < 16) {
+-            REXGPU_WARN("WAIT_REG_MEM: took 0x{:08X} at guest 0x{:08X} from the host GPU copy",
+-                        gpu_value, word_address);
+-          }
+-          continue;
+-        }
+-      }
+-    }
+     // iOS patch 0020: the hang breaker. A memory wait that nothing satisfies within 1 s ends:
+     // for an equality test the expected value is stored (as the GPU would have), otherwise the
+     // wait just passes. Logged every time.
+     if (!matched && is_memory && !wait_broken &&
+-        std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(1)) {
++        std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(2)) {
+       wait_broken = true;
+       const u32 word_address = poll_reg_addr & ~static_cast<u32>(0x3);
+       if ((wait_info & 0x7) == 0x3) {
+         const u32 forced = (value & ~mask) | (ref & mask);
+         StoreRelease(physical_memory_, word_address,
+                      xenos::GPUSwap(forced, static_cast<xenos::Endian>(poll_reg_addr & 0x3)));
+-        REXGPU_WARN("WAIT_REG_MEM hang breaker: stored 0x{:08X} at guest 0x{:08X} after 1 s",
++        REXGPU_WARN("WAIT_REG_MEM hang breaker: stored 0x{:08X} at guest 0x{:08X} after 2 s",
+                     forced, word_address);
+       } else {
+-        REXGPU_WARN("WAIT_REG_MEM hang breaker: passed the wait on guest 0x{:08X} after 1 s",
++        REXGPU_WARN("WAIT_REG_MEM hang breaker: passed the wait on guest 0x{:08X} after 2 s",
+                     word_address);
+       }
+       matched = true;
+diff --git a/src/gpu/xenos/command_processor.h b/src/gpu/xenos/command_processor.h
+index 172984d..9b53f4f 100644
+--- a/src/gpu/xenos/command_processor.h
++++ b/src/gpu/xenos/command_processor.h
+@@ -277,6 +277,13 @@ class REX_GPU_XENOS_API CommandProcessor : public rex::NonCopyable {
+    *
+    * @return False when the host has no such copy or the read failed.
+    */
++  /**
++   * iOS patch 0021: copies the memory exports made since the last call from the host GPU's copy
++   * of guest memory to guest memory, in one batch.
++   *
++   * @return True when something was copied.
++   */
++  virtual bool FlushPendingGpuWrites() { return false; }
+   virtual bool ReadHostGpuWord([[maybe_unused]] u32 guest_address,
+                                [[maybe_unused]] u32* stored_out) {
+     return false;
+diff --git a/src/gpu/xenos/vulkan/command_processor.cpp b/src/gpu/xenos/vulkan/command_processor.cpp
+index 371d3d2..2416dc2 100644
+--- a/src/gpu/xenos/vulkan/command_processor.cpp
++++ b/src/gpu/xenos/vulkan/command_processor.cpp
+@@ -2146,6 +2146,9 @@ void VulkanCommandProcessor::IssueSwap([[maybe_unused]] u32 frontbuffer_ptr, u32
+     return;
+   }
+ 
++  // iOS patch 0021: once a frame, the memory exports of the frame reach guest memory.
++  FlushPendingGpuWrites();
++
+   // Opens a submission when the swap is the only command in the frame.
+   if (!BeginSubmission(true)) {
+     REXGPU_ERROR("XELOG_GPU PRESENT: BeginSubmission FAILED");
+@@ -3891,6 +3894,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, u32 index
+       // previous export: NFS Most Wanted 2012 waited forever on such a flag).
+       large_resolve_ranges_[large_resolve_next_++ % 256] = {
+           memexport_range.base_address_dwords << 2, memexport_range.size_bytes};
++      pending_memexport_ranges_.push_back(memexport_range);  // iOS patch 0021
+     }
+   } else if (memexport_writes_possible) {
+     // Stream constants may be invalid or dynamic, so invalidation covers unknown destinations.
+@@ -4521,6 +4525,94 @@ bool VulkanCommandProcessor::ReadbackWaitedMemory(u32 guest_address) {
+   return true;
+ }
+ 
++bool VulkanCommandProcessor::FlushPendingGpuWrites() {
++  if (pending_memexport_ranges_.empty()) {
++    return false;
++  }
++  static u32 failures_logged = 0;
++  auto fail = [this](const char* reason) {
++    if (failures_logged++ < 8) {
++      REXGPU_WARN("FlushPendingGpuWrites failed: {}", reason);
++    }
++    pending_memexport_ranges_.clear();
++    return false;
++  };
++  u32 total_size = 0;
++  for (const draw_state::MemExportRange& range : pending_memexport_ranges_) {
++    total_size += range.size_bytes;
++  }
++  if (!total_size) {
++    pending_memexport_ranges_.clear();
++    return false;
++  }
++  const gpu::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
++  const gpu::vulkan::VulkanDevice::Functions& dfn = vulkan_device->GetFunctions();
++  const VkDevice device = vulkan_device->GetDevice();
++  // The same steps as IssueDrawMemexportReadbackFullPath, for all pending ranges at once.
++  VkBuffer readback_buffer = VK_NULL_HANDLE;
++  VkDeviceMemory readback_memory = VK_NULL_HANDLE;
++  if (!gpu::vulkan::objects::CreateDedicatedAllocationBuffer(
++          vulkan_device, total_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
++          gpu::vulkan::objects::MemoryPurpose::kReadback, readback_buffer, readback_memory)) {
++    return fail("buffer creation");
++  }
++  if (!submission_open_ && !BeginSubmission(true)) {
++    dfn.vkDestroyBuffer(device, readback_buffer, nullptr);
++    dfn.vkFreeMemory(device, readback_memory, nullptr);
++    return fail("BeginSubmission");
++  }
++  shared_memory_->Use(VulkanSharedMemory::Usage::kRead);
++  SubmitBarriers(true);
++  u32 readback_offset = 0;
++  for (const draw_state::MemExportRange& range : pending_memexport_ranges_) {
++    VkBufferCopy region = {};
++    region.srcOffset = range.base_address_dwords << 2;
++    region.dstOffset = readback_offset;
++    region.size = range.size_bytes;
++    deferred_command_buffer_.CmdVkCopyBuffer(shared_memory_->GetBuffer(), readback_buffer, 1,
++                                             &region);
++    readback_offset += range.size_bytes;
++  }
++  PushBufferMemoryBarrier(readback_buffer, 0, total_size, VK_PIPELINE_STAGE_TRANSFER_BIT,
++                          VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
++                          VK_ACCESS_HOST_READ_BIT);
++  if (!AwaitAllQueueOperationsCompletion()) {
++    dfn.vkDestroyBuffer(device, readback_buffer, nullptr);
++    dfn.vkFreeMemory(device, readback_memory, nullptr);
++    return fail("AwaitAllQueueOperationsCompletion");
++  }
++  void* mapping = nullptr;
++  if (dfn.vkMapMemory(device, readback_memory, 0, VK_WHOLE_SIZE, 0, &mapping) != VK_SUCCESS) {
++    dfn.vkDestroyBuffer(device, readback_buffer, nullptr);
++    dfn.vkFreeMemory(device, readback_memory, nullptr);
++    return fail("vkMapMemory");
++  }
++  VkMappedMemoryRange mapped_range = {};
++  mapped_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
++  mapped_range.memory = readback_memory;
++  mapped_range.offset = 0;
++  mapped_range.size = VK_WHOLE_SIZE;
++  dfn.vkInvalidateMappedMemoryRanges(device, 1, &mapped_range);
++  const u8* bytes = reinterpret_cast<const u8*>(mapping);
++  for (const draw_state::MemExportRange& range : pending_memexport_ranges_) {
++    if (u8* destination =
++            GetPhysicalForWrite(physical_memory_, range.base_address_dwords << 2, range.size_bytes)) {
++      std::memcpy(destination, bytes, range.size_bytes);
++    }
++    bytes += range.size_bytes;
++  }
++  dfn.vkUnmapMemory(device, readback_memory);
++  dfn.vkDestroyBuffer(device, readback_buffer, nullptr);
++  dfn.vkFreeMemory(device, readback_memory, nullptr);
++  static u32 flushes_logged = 0;
++  if (flushes_logged++ < 4) {
++    REXGPU_WARN("FlushPendingGpuWrites: copied {} memory export ranges ({} bytes)",
++                pending_memexport_ranges_.size(), total_size);
++  }
++  pending_memexport_ranges_.clear();
++  return true;
++}
++
+ bool VulkanCommandProcessor::ReadHostGpuWord(u32 guest_address, u32* stored_out) {
+   static u32 failures_logged = 0;
+   auto fail = [](const char* reason) {
+diff --git a/src/gpu/xenos/vulkan/command_processor.h b/src/gpu/xenos/vulkan/command_processor.h
+index f3ba5d3..0bbe06f 100644
+--- a/src/gpu/xenos/vulkan/command_processor.h
++++ b/src/gpu/xenos/vulkan/command_processor.h
+@@ -453,6 +453,10 @@ class VulkanCommandProcessor : public CommandProcessor {
+   // that a WAIT_REG_MEM on a word inside one copies only that word.
+   bool ReadbackWaitedMemory(u32 guest_address) override;
+   bool ReadHostGpuWord(u32 guest_address, u32* stored_out) override;  // iOS patch 0020
++  // iOS patch 0021: memory exports not yet copied to guest memory, copied in one batch when a
++  // WAIT_REG_MEM waits on memory and at each swap (instead of after every export draw).
++  bool FlushPendingGpuWrites() override;
++  std::vector<draw_state::MemExportRange> pending_memexport_ranges_;
+   struct LargeResolveRange {
+     u32 address = 0;
+     u32 length = 0;

@@ -1021,6 +1021,12 @@ int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char
                                            // detailed logging of 0.1.13-0.1.20 wrote hundreds of
                                            // lines a second, each flushed, and made the game
                                            // stutter. Crash and hang reports stay.
+                                           // Shell 0.1.26: no readback after each export draw (the
+                                           // fast path's late, stale copy also overwrote GPU
+                                           // results). Patch 0021 copies all exports since the last
+                                           // copy in one batch when a WAIT_REG_MEM waits on memory
+                                           // and once a frame at the swap.
+                                           "--gpu.xenos.readback_memexport=false",
                                            };
     int ok = 0;
     {

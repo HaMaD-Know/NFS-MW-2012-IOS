@@ -37,9 +37,9 @@
 // Its generated code is compiled into this library only by ipad-runtime-app.yml.
 // The game itself (private build only): the code ReXGlue generated from the player's own
 // default.xex is compiled in only by the private repository's build, never by the public one.
-#if __has_include("nfsmw_init.h")
 #include <rex/filesystem/file_system.h>
 #include <rex/filesystem/mount.h>
+#if __has_include("nfsmw_init.h")
 #include "nfsmw_init.h"
 #define NFSMW_HAVE_GAME 1
 #elif __has_include("testgame_init.h")
@@ -753,11 +753,47 @@ extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_all(const ch
   return Guarded(root, log, true, seconds, true);
 }
 
-// --- Play the game (private build) -------------------------------------------------------------
+// --- Play the game ------------------------------------------------------------------------------
 
 namespace {
 
+// The game's launcher image. Built in (the private macOS build compiles the launcher code into
+// this library), or else from libnfsmw_default.dylib next to this library (Option A: the game
+// code compiled on Linux and added to the public app; it exports nfsmw_game_image()).
+const rex::ppc::PPCImage *GameImage(bool quiet) {
 #ifdef NFSMW_HAVE_GAME
+  (void)quiet;
+  return &kPPCImageConfig;
+#else
+  static const rex::ppc::PPCImage *image = nullptr;
+  if (image) return image;
+  Dl_info self{};
+  if (!dladdr(reinterpret_cast<const void *>(&GameImage), &self) || !self.dli_fname) return nullptr;
+  const std::filesystem::path library =
+      std::filesystem::path(self.dli_fname).parent_path() / "libnfsmw_default.dylib";
+  std::error_code error;
+  if (!std::filesystem::exists(library, error)) {
+    if (!quiet) Say("  Play: no game code in this app (" + library.filename().string() + " missing)");
+    return nullptr;
+  }
+  void *handle = dlopen(library.c_str(), RTLD_NOW | RTLD_GLOBAL);
+  if (!handle) {
+    const char *why = dlerror();
+    if (!quiet) Say(std::string("  Play: cannot load the game code: ") + (why ? why : "unknown"));
+    return nullptr;
+  }
+  using ImageFn = const rex::ppc::PPCImage *(*)();
+  auto get = reinterpret_cast<ImageFn>(dlsym(handle, "nfsmw_game_image"));
+  if (!get) {
+    if (!quiet) Say("  Play: the game code library has no nfsmw_game_image()");
+    return nullptr;
+  }
+  image = get();
+  if (!quiet) Say("  Play: game code loaded from " + library.filename().string());
+  return image;
+#endif
+}
+
 // Hang report (shell 0.1.16): shell 0.1.15 stopped drawing at the end of the opening cutscene
 // (frames stuck, the last sound buffer looping), with no crash and nothing in the log. When no
 // frame comes for a while, log the call stack of every other thread: which game function each
@@ -847,8 +883,8 @@ void LogAllThreadStacks() {
 // module hawaii.xex.dll the launcher loads, comes straight from the ISO. Runs until the title
 // exits; the window stays open while it runs.
 bool PlayGame(Host &app, const std::filesystem::path &root, const std::filesystem::path &iso,
-              const std::filesystem::path &code_folder) {
-  rex::kernel::TitleRuntime title(kPPCImageConfig);
+              const std::filesystem::path &code_folder, const rex::ppc::PPCImage &image) {
+  rex::kernel::TitleRuntime title(image);
   auto &paths = title.GetTitlePaths();
   if (auto set = paths.entry.SetText(rex::SettingLayer::kTitle, "default.xex"); !set) {
     Say("  Play: entry: " + set.error().GetDescription());
@@ -975,17 +1011,14 @@ bool PlayGame(Host &app, const std::filesystem::path &root, const std::filesyste
   title.Unload();
   return true;
 }
-#endif
 
 int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char *code_text) {
   g_log = log;
-#ifndef NFSMW_HAVE_GAME
-  (void)root_text;
-  (void)iso_text;
-  (void)code_text;
-  Say("  Play: this app has no game built in (the public app never does; only your private build)");
-  return 0;
-#else
+  const rex::ppc::PPCImage *image = GameImage(false);
+  if (!image) {
+    Say("  Play: this app has no game code (the public app never does; only your own build)");
+    return 0;
+  }
   static std::atomic<bool> ran{false};
   if (ran.exchange(true)) {
     Say("  ReXGlue already ran once in this launch; close and reopen the app");
@@ -1036,7 +1069,7 @@ int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char
       if (!init) {
         Say("  Play: Init FAILED: " + init.error().GetDescription());
       } else if (!rex::app::IsShutdownRequested()) {
-        ok = PlayGame(app, root, iso_text ? iso_text : "", code_text ? code_text : "") ? 1 : 0;
+        ok = PlayGame(app, root, iso_text ? iso_text : "", code_text ? code_text : "", *image) ? 1 : 0;
       }
       Say("  Play: Shutdown returned " + std::to_string(app.Shutdown()));
     }
@@ -1048,7 +1081,6 @@ int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char
     Say("  Play: unknown C++ exception");
   }
   return 0;
-#endif
 }
 
 }  // namespace
@@ -1057,7 +1089,15 @@ extern "C" __attribute__((visibility("default"))) int nfsmw_rexhost_has_game(voi
 #ifdef NFSMW_HAVE_GAME
   return 1;
 #else
-  return 0;
+  // Only whether the game code library is there; it is loaded when Play starts.
+  Dl_info self{};
+  if (!dladdr(reinterpret_cast<const void *>(&nfsmw_rexhost_has_game), &self) || !self.dli_fname)
+    return 0;
+  std::error_code error;
+  return std::filesystem::exists(
+             std::filesystem::path(self.dli_fname).parent_path() / "libnfsmw_default.dylib", error)
+             ? 1
+             : 0;
 #endif
 }
 

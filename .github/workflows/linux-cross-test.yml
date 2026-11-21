@@ -43,7 +43,9 @@ jobs:
       - name: Compile and link the test program for the iPad
         run: |
           ls kit; head -c 3000 kit/flags.txt; echo
-          bash Tools/cross_build_ios.sh kit kit/testgame testgame out/libtestgame_linux.dylib work
+          EXTRA_SOURCES="$PWD/Tools/game_image_shim.cpp" \
+            bash Tools/cross_build_ios.sh kit kit/testgame testgame out/libtestgame_linux.dylib work
+          "$LLVM_BIN/llvm-nm" -gU out/libtestgame_linux.dylib | grep nfsmw_game_image
 
       - name: Keep the result (test program only, no game code)
         if: always()

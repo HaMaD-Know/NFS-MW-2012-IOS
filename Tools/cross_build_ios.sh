@@ -46,6 +46,10 @@ start=$(date +%s)
 printf '%s\n' "$gen"/*.cpp | xargs -P "$(nproc)" -I{} bash -c \
   'compile "$1" "$0/obj/$(basename "${1%.cpp}").o" "${@:2}"' "$work" {} "${target[@]}" "${recomp[@]}"
 compile "$kit/stub/rexglue_host_alloc_stub.cpp" "$work/obj/zz_alloc_stub.o" "${target[@]}" "${base[@]}"
+# EXTRA_SOURCES: our own files compiled like the generated code (e.g. Tools/game_image_shim.cpp).
+for extra in ${EXTRA_SOURCES:-}; do
+  compile "$extra" "$work/obj/zz_$(basename "${extra%.cpp}").o" "${target[@]}" "${recomp[@]}"
+done
 echo "compiled $(ls "$work"/obj/*.o | wc -l) objects in $(( $(date +%s) - start )) s"
 
 # --- Stub libraries for the system symbols the code uses (names only, written here).

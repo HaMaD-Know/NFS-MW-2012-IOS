@@ -1,0 +1,16 @@
+diff --git a/src/gpu/xenos/vulkan/command_processor.cpp b/src/gpu/xenos/vulkan/command_processor.cpp
+index 821023b..e5adfaf 100644
+--- a/src/gpu/xenos/vulkan/command_processor.cpp
++++ b/src/gpu/xenos/vulkan/command_processor.cpp
+@@ -3886,6 +3886,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, u32 index
+     for (const draw_state::MemExportRange& memexport_range : memexport_ranges_) {
+       shared_memory_->RangeWrittenByGPU(memexport_range.base_address_dwords << 2,
+                                         memexport_range.size_bytes);
++      // iOS patch 0018: a WAIT_REG_MEM on a word that a memory export wrote copies that word
++      // (patch 0016), also when the export readback is late (the fast path reads back the
++      // previous export: NFS Most Wanted 2012 waited forever on such a flag).
++      large_resolve_ranges_[large_resolve_next_++ % 32] = {
++          memexport_range.base_address_dwords << 2, memexport_range.size_bytes};
+     }
+   } else if (memexport_writes_possible) {
+     // Stream constants may be invalid or dynamic, so invalidation covers unknown destinations.

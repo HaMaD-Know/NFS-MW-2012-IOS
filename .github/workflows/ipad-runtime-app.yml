@@ -342,6 +342,23 @@ jobs:
           echo "::notice title=Embedded runtime libraries::${body}"
           exit $missing
 
+      # Option A, stage A1 (public runs only, no game code): what a Linux machine needs to compile
+      # generated code for the iPad without Apple's SDK. The private build is not changed by this.
+      - name: Pack the runtime kit (public build only)
+        if: inputs.game_code_artifact == ''
+        run: |
+          python3 project/Tools/make_runtime_kit.py build-ios rexglue-sdk "$APP/Frameworks" \
+            "$TESTGAME/generated/default" "$RUNNER_TEMP/runtime-kit"
+          du -sh "$RUNNER_TEMP/runtime-kit"
+
+      - name: Upload the runtime kit (public build only)
+        if: inputs.game_code_artifact == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfsmw-runtime-kit
+          path: ${{ runner.temp }}/runtime-kit
+          retention-days: 30
+
       - name: Package unsigned IPA
         run: |
           mkdir -p dist/Payload

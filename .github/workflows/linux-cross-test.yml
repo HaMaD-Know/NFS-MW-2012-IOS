@@ -1,0 +1,57 @@
+# Option A, stage A2: compile the project's own test program (no game code) for the iPad on
+# Linux, with the runtime kit of a public "iPad runtime app" run. Proves the Linux route (headers,
+# linker, signing) for free before any private game build uses it.
+name: Linux iPad compile test
+
+on:
+  workflow_run:
+    workflows: ["iPad runtime app"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: ID of a successful "iPad runtime app" run (its runtime kit is used)
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  cross:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the runtime kit
+        uses: actions/download-artifact@v4
+        with:
+          name: nfsmw-runtime-kit
+          path: kit
+          run-id: ${{ github.event.workflow_run.id || inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Install the open-source toolchain
+        run: |
+          start=$(date +%s)
+          bash Tools/setup_cross_toolchain.sh "$RUNNER_TEMP/tools"
+          echo "toolchain setup: $(( $(date +%s) - start )) s"
+
+      - name: Compile and link the test program for the iPad
+        run: |
+          ls kit; head -c 3000 kit/flags.txt; echo
+          bash Tools/cross_build_ios.sh kit kit/testgame testgame out/libtestgame_linux.dylib work
+
+      - name: Keep the result (test program only, no game code)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-testgame-dylib
+          path: |
+            out
+            work/*.txt
+            work/*.tbd
+          retention-days: 14

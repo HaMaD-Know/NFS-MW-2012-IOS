@@ -1,8 +1,36 @@
 diff --git a/src/gpu/xenos/command_processor.cpp b/src/gpu/xenos/command_processor.cpp
-index 0a026ad..1f68dbf 100644
+index 0a026ad..84c0947 100644
 --- a/src/gpu/xenos/command_processor.cpp
 +++ b/src/gpu/xenos/command_processor.cpp
-@@ -1078,46 +1078,26 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -995,27 +995,6 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+   bool matched = false;
+   u32 attempts = 0;
+   u32 wait_readback_tries = 0;  // iOS patch 0016
+-  // iOS patch 0020: the same test as below, for a value read from the host GPU's copy.
+-  const auto wait_test = [wait_info, ref, mask](u32 tested) {
+-    switch (wait_info & 0x7) {
+-      case 0x1:
+-        return (tested & mask) < ref;
+-      case 0x2:
+-        return (tested & mask) <= ref;
+-      case 0x3:
+-        return (tested & mask) == ref;
+-      case 0x4:
+-        return (tested & mask) != ref;
+-      case 0x5:
+-        return (tested & mask) >= ref;
+-      case 0x6:
+-        return (tested & mask) > ref;
+-      case 0x7:
+-        return true;
+-      default:
+-        return false;
+-    }
+-  };
+   bool wait_broken = false;
+   // iOS patch 0014: NFS Most Wanted 2012 hung at the cutscene -> driving switch with this thread
+   // waiting here forever. Log what a wait that lasts over 2 s is waiting for (once per wait,
+@@ -1078,46 +1057,26 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
      }
      // iOS patch 0016: a memory word that a large resolve (not read back) wrote on the host GPU
      // only: copy that word to guest memory and test again, on the first miss and every 16th.

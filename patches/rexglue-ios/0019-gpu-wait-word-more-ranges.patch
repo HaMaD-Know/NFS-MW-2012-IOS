@@ -1,0 +1,37 @@
+diff --git a/src/gpu/xenos/vulkan/command_processor.cpp b/src/gpu/xenos/vulkan/command_processor.cpp
+index e5adfaf..c9dbb5e 100644
+--- a/src/gpu/xenos/vulkan/command_processor.cpp
++++ b/src/gpu/xenos/vulkan/command_processor.cpp
+@@ -3889,7 +3889,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, u32 index
+       // iOS patch 0018: a WAIT_REG_MEM on a word that a memory export wrote copies that word
+       // (patch 0016), also when the export readback is late (the fast path reads back the
+       // previous export: NFS Most Wanted 2012 waited forever on such a flag).
+-      large_resolve_ranges_[large_resolve_next_++ % 32] = {
++      large_resolve_ranges_[large_resolve_next_++ % 256] = {
+           memexport_range.base_address_dwords << 2, memexport_range.size_bytes};
+     }
+   } else if (memexport_writes_possible) {
+@@ -4161,7 +4161,7 @@ bool VulkanCommandProcessor::IssueCopyReadbackResolvePath() {
+   constexpr u32 kMaxReadbackLength = 64 * 1024;
+   if (written_length > kMaxReadbackLength) {
+     // iOS patch 0016: remember it; a WAIT_REG_MEM on a word inside copies only that word.
+-    large_resolve_ranges_[large_resolve_next_++ % 32] = {written_address, written_length};
++    large_resolve_ranges_[large_resolve_next_++ % 256] = {written_address, written_length};
+     return true;
+   }
+   {
+diff --git a/src/gpu/xenos/vulkan/command_processor.h b/src/gpu/xenos/vulkan/command_processor.h
+index 59ba304..01d5eb8 100644
+--- a/src/gpu/xenos/vulkan/command_processor.h
++++ b/src/gpu/xenos/vulkan/command_processor.h
+@@ -456,7 +456,9 @@ class VulkanCommandProcessor : public CommandProcessor {
+     u32 address = 0;
+     u32 length = 0;
+   };
+-  LargeResolveRange large_resolve_ranges_[32] = {};
++  // iOS patch 0019: 256 ranges (was 32): gameplay exports many ranges per frame, and the one
++  // a WAIT_REG_MEM waits on must still be listed when the wait comes.
++  LargeResolveRange large_resolve_ranges_[256] = {};
+   u32 large_resolve_next_ = 0;
+   VkBuffer wait_readback_buffer_ = VK_NULL_HANDLE;
+   VkDeviceMemory wait_readback_memory_ = VK_NULL_HANDLE;

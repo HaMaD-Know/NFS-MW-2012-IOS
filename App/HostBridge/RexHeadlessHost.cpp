@@ -1008,19 +1008,15 @@ int PlayEntry(const char *root_text, LogFn log, const char *iso_text, const char
                                            // Async shader compilation stays on (default): the hang
                                            // it was suspected in was the resolve flag (0.1.19), and
                                            // compiling at once froze the game for each new shader.
-                                           // Resolve readback (0.1.19, limited to 64 KB by patch
-                                           // 0015): copies small render-to-texture results back
-                                           // to guest memory.
-                                           "--gpu.xenos.readback_resolve=full",
-                                           // Shell 0.1.23: the hang at the cutscene -> driving
-                                           // switch is a GPU WAIT_REG_MEM on guest 0x149570F4 ==
-                                           // 0xFFFFFFFF, written by memory export (24 one-point
-                                           // draws just before the wait, 0.1.22's packet log).
-                                           // The fast memexport readback is double buffered: it
-                                           // copies the previous export, so this flag would only
-                                           // arrive with the next export, after the wait. Read
-                                           // every export back at once instead.
-                                           "--gpu.xenos.readback_memexport_fast=false",
+                                           // The hang at the cutscene -> driving switch is a GPU
+                                           // WAIT_REG_MEM on guest 0x149570F4 == 0xFFFFFFFF that a
+                                           // memory export writes (0.1.22's packet log). Shell
+                                           // 0.1.23 read every export back at once and the game
+                                           // ran to driving, but at 2-7 fps: each readback waits
+                                           // for the GPU, many times a frame. Shell 0.1.24 keeps
+                                           // the default (fast, a frame late) export readback and
+                                           // no resolve readback; patches 0016/0018/0019 copy only
+                                           // the word a WAIT_REG_MEM waits on, when it waits.
                                            // Normal logging again (info, warnings flushed): the
                                            // detailed logging of 0.1.13-0.1.20 wrote hundreds of
                                            // lines a second, each flushed, and made the game
